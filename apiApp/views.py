@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from .models import Cart, CartItem, Category, Product, Review, Wishlist
+from .models import Cart, CartItem, Category, Order, OrderItem, Product, Review, Wishlist
 from .serializers import (
     CartItemSerializer,
     CartSerializer,
@@ -15,6 +15,11 @@ from .serializers import (
     WishlistSerializer,
 )
 from django.db.models import Q
+import stripe
+from django.conf import settings
+
+from django.http import HttpResponse
+from django.views.decorators.csrf import csrf_exempt
 
 # Create your views here.
 User = get_user_model()
@@ -181,3 +186,108 @@ def product_search(request):
 
     serializer = ProductListSerializer(products, many=True)
     return Response(serializer.data)
+
+
+stripe.api_key = settings.STRIPE_SECRET_KEY
+
+
+@api_view(['POST'])
+def create_checkout_session(request):
+    cart_code = request.data.get("cart_code")
+    email = request.data.get("email")
+
+    cart = Cart.objects.get(cart_code=cart_code)
+    cartitems = cart.cartitems.all()
+
+    if not cartitems.exists():
+        return Response(
+            {"error": "Your cart is empty."},
+            status=400
+        )
+
+    line_items = []
+
+    for item in cartitems:
+        line_items.append({
+            "price_data": {
+                "currency": "usd",
+                "product_data": {
+                    "name": item.product.name,
+                },
+                "unit_amount": int(item.product.price * 100),
+            },
+            "quantity": item.quantity,
+        })
+
+    checkout_session = stripe.checkout.Session.create(
+        line_items=line_items,
+        mode="payment",
+        customer_email=email,
+        metadata={
+            "cart_code": cart_code
+        },
+        success_url="http://localhost:3000/success",
+        cancel_url="http://localhost:3000/cancel",
+    )
+
+    return Response({
+        "checkout_url": checkout_session.url
+    })
+
+
+
+@csrf_exempt
+def stripe_webhook(request):
+    payload = request.body
+    sig_header = request.META.get("HTTP_STRIPE_SIGNATURE")
+    endpoint_secret = settings.STRIPE_WEBHOOK_SECRET
+
+    try:
+        event = stripe.Webhook.construct_event(
+            payload,
+            sig_header,
+            endpoint_secret
+        )
+
+    except ValueError:
+        return HttpResponse(status=400)
+
+    except stripe.error.SignatureVerificationError:
+        return HttpResponse(status=400)
+
+    if event["type"] == "checkout.session.completed":
+        session = event["data"]["object"]
+        session_data = session.to_dict()
+
+        if session_data["payment_status"] == "paid":
+            cart_code = session_data.get("metadata", {}).get("cart_code")
+
+            if cart_code:
+                fulfil_checkout(session_data, cart_code)
+                print("Payment successful!")
+                print("Cart Code:", cart_code)
+                print("Session ID:", session_data["id"])
+            else:
+                print("Cart code not found in metadata")
+
+    return HttpResponse(status=200)
+
+
+def fulfil_checkout(session, cart_code):
+    order = Order.objects.create(
+        stripe_checkout_id=session["id"],
+        amount=session["amount_total"] / 100,
+        currency=session["currency"],
+        customer_email=session["customer_email"],
+        status="completed"
+    )
+
+    cart = Cart.objects.get(cart_code=cart_code)
+    cartitems = cart.cartitems.all()
+
+    for item in cartitems:
+        OrderItem.objects.create(
+            order=order,
+            product=item.product,
+            quantity=item.quantity
+        )

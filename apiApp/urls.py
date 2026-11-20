@@ -20,6 +20,7 @@ urlpatterns = [
     path('cartitems/delete/<int:pk>/', views.delete_cartitem, name='delete_cartitem'),
 
     path('wishlist/add/', views.add_to_wishlist, name='add_to_wishlist'),
-
+    path('checkout/', views.create_checkout_session, name='create_checkout_session'),
+    path('webhook/stripe/', views.stripe_webhook, name='stripe_webhook'),
 
 ]
