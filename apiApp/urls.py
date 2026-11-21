@@ -23,4 +23,9 @@ urlpatterns = [
     path('checkout/', views.create_checkout_session, name='create_checkout_session'),
     path('webhook/stripe/', views.stripe_webhook, name='stripe_webhook'),
 
+    path('register/', views.RegisterView.as_view(), name='register'),
+    path('login/', views.LoginView.as_view(), name='login'),
+    path('profile/', views.UserProfileView.as_view(), name='profile'),
+    path('logout/', views.LogoutView.as_view(), name='logout'),
+
 ]
