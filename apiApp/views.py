@@ -1,22 +1,27 @@
-from django.db.migrations import serializer
+from email.headerregistry import Group
+
 from django.contrib.auth import get_user_model
 from django.shortcuts import render
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .models import Cart, CartItem, Category, Order, OrderItem, Product, Review, Wishlist
 from .serializers import (
+    AdminCategorySerializer,
+    AdminProductSerializer,
     CartItemSerializer,
     CartSerializer,
+    OrderSerializer,
     ProductListSerializer,
     ProductDetailSerializer,
     CategoryListSerializer,
     CategoryDetailSerializer,
     ReviewSerializer,
+    StaffManagementSerializer,
     UserSerializer,
     WishlistSerializer,
     RegisterSerializer,
 )
-from django.db.models import Q
+from django.db.models import Q, Count, Sum
 import stripe
 from django.conf import settings
 
@@ -29,8 +34,13 @@ from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated
 
+from django.shortcuts import get_object_or_404
+from .permissions import IsStaffOrSuperAdmin, IsSuperAdmin
 
-
+from django.db.models.functions import TruncMonth
+from django.utils import timezone
+from datetime import timedelta
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 # Create your views here.
 User = get_user_model()
 
@@ -236,8 +246,8 @@ def create_checkout_session(request):
         metadata={
             "cart_code": cart_code
         },
-        success_url="http://localhost:3000/success",
-        cancel_url="http://localhost:3000/cancel",
+        success_url="http://localhost:5173/success?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url="http://localhost:5173/cancel",
     )
 
     return Response({
@@ -341,3 +351,572 @@ class LogoutView(APIView):
         return Response({
             'message': 'Successfully logged out.'
         }, status=status.HTTP_200_OK)
+
+
+class OrderHistoryView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        orders = Order.objects.filter(
+            customer_email=request.user.email
+        ).order_by('-created_at')
+
+        serializer = OrderSerializer(orders, many=True)
+
+        return Response(serializer.data)
+
+
+class WishlistListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        wishlist = Wishlist.objects.filter(
+            user=request.user
+        )
+
+        serializer = WishlistSerializer(
+            wishlist,
+            many=True
+        )
+
+        return Response(serializer.data)
+
+
+class UserProfileUpdateView(APIView):
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
+
+    def patch(self, request):
+        serializer = UserSerializer(
+            request.user,
+            data=request.data,
+            partial=True,
+            context={'request': request}
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+
+            return Response({
+                'message': 'Profile updated successfully!',
+                'user': UserSerializer(
+                    request.user,
+                    context={'request': request}
+                ).data
+            }, status=200)
+
+        return Response(serializer.errors, status=400)
+
+class CustomerReviewsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        reviews = Review.objects.filter(
+            user=request.user
+        ).order_by('-created')
+
+        serializer = ReviewSerializer(reviews, many=True)
+
+        return Response(serializer.data)
+
+
+
+class StaffOrderListView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            app_label = Order._meta.app_label
+            if not request.user.has_perm(f"{app_label}.view_order"):
+                return Response(
+                    {"error": "You do not have permission to view orders."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        orders = Order.objects.all().order_by("-created_at")
+        serializer = OrderSerializer(orders, many=True)
+
+        return Response(serializer.data)
+
+
+class StaffOrderStatusUpdateView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def patch(self, request, pk):
+        if not request.user.is_superuser:
+            app_label = Order._meta.app_label
+            if not request.user.has_perm(f"{app_label}.change_order"):
+                return Response(
+                    {"error": "You do not have permission to update orders."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        order = get_object_or_404(Order, pk=pk)
+
+        new_status = request.data.get("status")
+
+        valid_statuses = dict(
+            Order._meta.get_field("status").choices
+        )
+
+        if new_status not in valid_statuses:
+            return Response(
+                {"error": "Invalid order status."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        order.status = new_status
+        order.save(update_fields=["status"])
+
+        serializer = OrderSerializer(order)
+
+        return Response({
+            "message": "Order status updated successfully.",
+            "data": serializer.data
+        })
+
+
+class AdminDashboardOverviewView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request):
+        # Staff must have the required read permissions
+        if not request.user.is_superuser:
+            required_permissions = [
+                "apiApp.view_product",
+                "apiApp.view_category",
+                "apiApp.view_order",
+                "apiApp.view_review",
+            ]
+
+            if not request.user.has_perms(required_permissions):
+                return Response(
+                    {"error": "Dashboard permissions are incomplete."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        total_products = Product.objects.count()
+        total_categories = Category.objects.count()
+        total_orders = Order.objects.count()
+
+        total_customers = User.objects.filter(
+            is_staff=False,
+            is_superuser=False
+        ).count()
+
+        completed_revenue = Order.objects.filter(
+            status="completed"
+        ).aggregate(total=Sum("amount"))["total"] or 0
+
+        pending_orders = Order.objects.filter(
+            status="pending"
+        ).count()
+
+        low_stock_products = Product.objects.filter(stock__lte=5)
+
+        recent_orders = Order.objects.order_by("-created_at")[:5]
+
+        return Response({
+            "total_products": total_products,
+            "total_categories": total_categories,
+            "total_orders": total_orders,
+            "total_customers": total_customers,
+            "total_revenue": completed_revenue,
+            "pending_orders": pending_orders,
+            "low_stock_count": low_stock_products.count(),
+            "low_stock_products": AdminProductSerializer(
+                low_stock_products,
+                many=True
+            ).data,
+            "recent_orders": OrderSerializer(
+                recent_orders,
+                many=True
+            ).data,
+        })
+
+
+class AdminLowStockProductsView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request):
+        products = Product.objects.filter(
+            stock__lte=5
+        ).order_by("stock")
+
+        serializer = AdminProductSerializer(products, many=True)
+
+        return Response(serializer.data)
+
+
+
+class AdminProductListCreateView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        products = Product.objects.all().order_by("-id")
+        serializer = AdminProductSerializer(products, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = AdminProductSerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                serializer.data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+
+class AdminProductDetailView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get_object(self, pk):
+        return get_object_or_404(Product, pk=pk)
+
+    def get(self, request, pk):
+        product = self.get_object(pk)
+        serializer = AdminProductSerializer(product)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        product = self.get_object(pk)
+        serializer = AdminProductSerializer(
+            product,
+            data=request.data
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    def patch(self, request, pk):
+        product = self.get_object(pk)
+        serializer = AdminProductSerializer(
+            product,
+            data=request.data,
+            partial=True
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    def delete(self, request, pk):
+        product = self.get_object(pk)
+        product.delete()
+
+        return Response(
+            {"message": "Product deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
+
+
+class AdminCategoryListCreateView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        categories = Category.objects.all().order_by("-id")
+        serializer = AdminCategorySerializer(categories, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = AdminCategorySerializer(data=request.data)
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(
+                serializer.data,
+                status=status.HTTP_201_CREATED
+            )
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+
+class AdminCategoryDetailView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get_object(self, pk):
+        return get_object_or_404(Category, pk=pk)
+
+    def get(self, request, pk):
+        category = self.get_object(pk)
+        serializer = AdminCategorySerializer(category)
+        return Response(serializer.data)
+
+    def put(self, request, pk):
+        category = self.get_object(pk)
+        serializer = AdminCategorySerializer(
+            category,
+            data=request.data
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    def patch(self, request, pk):
+        category = self.get_object(pk)
+        serializer = AdminCategorySerializer(
+            category,
+            data=request.data,
+            partial=True
+        )
+
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data)
+
+        return Response(
+            serializer.errors,
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    def delete(self, request, pk):
+        category = self.get_object(pk)
+        category.delete()
+
+        return Response(
+            {"message": "Category deleted successfully."},
+            status=status.HTTP_200_OK
+        )
+
+
+class AdminStaffListCreateView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def get(self, request):
+        staff_users = User.objects.filter(
+            is_staff=True,
+            is_superuser=False
+        ).order_by("-id")
+
+        serializer = StaffManagementSerializer(
+            staff_users,
+            many=True
+        )
+
+        return Response(serializer.data)
+
+    def post(self, request):
+        username = request.data.get("username")
+        email = request.data.get("email")
+        password = request.data.get("password")
+        first_name = request.data.get("first_name", "")
+        last_name = request.data.get("last_name", "")
+
+        if not username or not email or not password:
+            return Response(
+                {"error": "Username, email and password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if User.objects.filter(username=username).exists():
+            return Response(
+                {"error": "Username already exists."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if User.objects.filter(email=email).exists():
+            return Response(
+                {"error": "Email already exists."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        staff_group, created = Group.objects.get_or_create(
+            name="Staff"
+        )
+
+        user = User.objects.create_user(
+            username=username,
+            email=email,
+            password=password,
+            first_name=first_name,
+            last_name=last_name,
+            is_staff=True
+        )
+
+        user.groups.add(staff_group)
+
+        serializer = StaffManagementSerializer(user)
+
+        return Response(
+            serializer.data,
+            status=status.HTTP_201_CREATED
+        )
+
+
+class AdminStaffRoleUpdateView(APIView):
+    permission_classes = [IsSuperAdmin]
+
+    def patch(self, request, pk):
+        user = get_object_or_404(User, pk=pk)
+
+        if user.is_superuser:
+            return Response(
+                {"error": "Super Admin role cannot be changed here."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        role = request.data.get("role")
+
+        if role not in ["staff", "customer"]:
+            return Response(
+                {"error": "Role must be staff or customer."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        staff_group, created = Group.objects.get_or_create(
+            name="Staff"
+        )
+
+        if role == "staff":
+            user.is_staff = True
+            user.groups.add(staff_group)
+        else:
+            user.groups.remove(staff_group)
+            user.is_staff = False
+
+        user.save()
+
+        serializer = StaffManagementSerializer(user)
+
+        return Response({
+            "message": "User role updated successfully.",
+            "data": serializer.data
+        })
+
+
+class AdminReviewListView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            if not request.user.has_perm("apiApp.view_review"):
+                return Response(
+                    {"error": "You do not have permission."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        reviews = Review.objects.all().order_by("-created")
+        serializer = ReviewSerializer(reviews, many=True)
+
+        return Response(serializer.data)
+
+
+class AdminReviewDeleteView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def delete(self, request, pk):
+        if not request.user.is_superuser:
+            if not request.user.has_perm("apiApp.delete_review"):
+                return Response(
+                    {"error": "You do not have permission."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        review = get_object_or_404(Review, pk=pk)
+        review.delete()
+
+        return Response({
+            "message": "Review deleted successfully."
+        })
+
+
+
+class AdminAnalyticsView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            required_permissions = [
+                "apiApp.view_order",
+                "apiApp.view_product",
+            ]
+
+            if not request.user.has_perms(required_permissions):
+                return Response(
+                    {"error": "Analytics permissions are incomplete."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        today = timezone.now()
+        start_date = today - timedelta(days=365)
+
+        monthly_data = (
+            Order.objects.filter(
+                created_at__gte=start_date,
+                status="completed"
+            )
+            .annotate(month=TruncMonth("created_at"))
+            .values("month")
+            .annotate(
+                revenue=Sum("amount"),
+                total_orders=Count("id")
+            )
+            .order_by("month")
+        )
+
+        monthly_revenue = [
+            {
+                "month": item["month"].strftime("%Y-%m"),
+                "revenue": item["revenue"],
+            }
+            for item in monthly_data
+        ]
+
+        order_status = (
+            Order.objects.values("status")
+            .annotate(total=Count("id"))
+            .order_by("status")
+        )
+
+        top_products = (
+            OrderItem.objects.filter(order__status="completed")
+            .values("product_id", "product__name")
+            .annotate(total_sold=Sum("quantity"))
+            .order_by("-total_sold")[:5]
+        )
+
+        return Response({
+            "monthly_revenue": monthly_revenue,
+            "order_status": list(order_status),
+            "top_products": list(top_products),
+        })
+
+@api_view(["GET"])
+def get_cart(request, cart_code):
+    cart = Cart.objects.filter(cart_code=cart_code).first()
+
+    if not cart:
+        return Response(
+            {"error": "Cart not found"},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    serializer = CartSerializer(cart)
+    return Response(serializer.data, status=status.HTTP_200_OK)

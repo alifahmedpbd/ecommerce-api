@@ -1,8 +1,9 @@
 
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Cart, CartItem, Product, Category, Review, Wishlist
+from .models import Cart, CartItem, Order, OrderItem, Product, Category, Review, Wishlist
 
+User = get_user_model()
 
 # Product List Serializer
 class ProductListSerializer(serializers.ModelSerializer):
@@ -14,7 +15,6 @@ class ProductListSerializer(serializers.ModelSerializer):
 
 # Product Detail Serializer
 class ProductDetailSerializer(serializers.ModelSerializer):
-
     class Meta:
         model = Product
         fields = [
@@ -23,7 +23,8 @@ class ProductDetailSerializer(serializers.ModelSerializer):
             "slug",
             "description",
             "image",
-            "price"
+            "price",
+            "stock",
         ]
 
 
@@ -101,9 +102,21 @@ class CartStatSerializer(serializers.ModelSerializer):
         return total
 
 class UserSerializer(serializers.ModelSerializer):
+    profile_picture = serializers.ImageField(
+        required=False,
+        allow_null=True
+    )
+
     class Meta:
-        model = get_user_model()
-        fields = ["id", "first_name", "last_name", "profile_picture_url"]
+        model = User
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "profile_picture",
+        ]
 
 class ReviewSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -122,7 +135,6 @@ class WishlistSerializer(serializers.ModelSerializer):
 
 
 
-User = get_user_model()
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -134,3 +146,78 @@ class RegisterSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         user = User.objects.create_user(**validated_data)
         return user
+    
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    product = ProductListSerializer(read_only=True)
+
+    class Meta:
+        model = OrderItem
+        fields = ['id', 'product', 'quantity']
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Order
+        fields = [
+            'id',
+            'stripe_checkout_id',
+            'amount',
+            'currency',
+            'status',
+            'created_at',
+            'items'
+        ]
+
+class AdminProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "name",
+            "description",
+            "slug",
+            "image",
+            "price",
+            "featured",
+            "category",
+            "stock",
+        ]
+
+
+class AdminCategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "image",
+        ]
+
+
+class StaffManagementSerializer(serializers.ModelSerializer):
+    role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "username",
+            "email",
+            "first_name",
+            "last_name",
+            "is_active",
+            "role",
+        ]
+
+    def get_role(self, obj):
+        if obj.is_superuser:
+            return "super_admin"
+
+        if obj.groups.filter(name="Staff").exists():
+            return "staff"
+
+        return "customer"
