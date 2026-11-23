@@ -46,10 +46,25 @@ export function AuthProvider({ children }) {
     await refreshProfile()
   }
 
+  // Registration: only sends OTP
   const register = async (formData) => {
     const response = await api.post('/register/', formData)
+    return response.data
+  }
+
+  // Verify OTP and login automatically
+  const verifyRegistrationOTP = async (email, otp) => {
+    const response = await api.post('/verify-otp/', { email, otp })
+
     saveToken(response.data.token)
     await refreshProfile()
+
+    return response.data
+  }
+
+  const resendRegistrationOTP = async (email) => {
+    const response = await api.post('/resend-otp/', { email })
+    return response.data
   }
 
   const logout = async () => {
@@ -67,6 +82,8 @@ export function AuthProvider({ children }) {
         loading,
         login,
         register,
+        verifyRegistrationOTP,
+        resendRegistrationOTP,
         logout,
         refreshProfile,
       }}

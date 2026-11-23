@@ -4,7 +4,7 @@ from . import views
 
 
 urlpatterns = [
-        path('products/search/', views.product_search, name='product_search'),
+    path('products/search/', views.product_search, name='product_search'),
 
     path('products/', views.product_list, name='product_list'),
     path('products/<slug:slug>/', views.product_detail, name='product_detail'),
@@ -61,5 +61,14 @@ urlpatterns = [
     path('dashboard/analytics/', views.AdminAnalyticsView.as_view(), name='dashboard-analytics'),
 
     path('cart/<str:cart_code>/', views.get_cart, name='get_cart'),
+
+    path('products/<slug:slug>/reviews/', views.product_reviews, name='product_reviews'),
+
+    path('verify-otp/', views.VerifyRegistrationOTPView.as_view(), name='verify_otp'),
+    path('resend-otp/', views.ResendRegistrationOTPView.as_view(), name='resend_otp'),
+
+    path('forgot-password/', views.ForgotPasswordView.as_view(), name='forgot_password'),
+    path('verify-reset-otp/', views.VerifyResetOTPView.as_view(), name='verify_reset_otp'),
+    path('reset-password/', views.ResetPasswordView.as_view(), name='reset_password'),
     
 ]

@@ -1,4 +1,5 @@
-from email.headerregistry import Group
+
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.shortcuts import render
@@ -41,8 +42,21 @@ from django.db.models.functions import TruncMonth
 from django.utils import timezone
 from datetime import timedelta
 from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
-# Create your views here.
+from django.contrib.auth.models import Group
+
+import secrets
+
+from django.contrib.auth.hashers import make_password, check_password
+from django.contrib.auth.password_validation import validate_password
+from django.core.mail import send_mail
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, transaction
+
+from .models import PendingRegistration, PasswordResetOTP
+stripe.api_key = settings.STRIPE_SECRET_KEY
 User = get_user_model()
+
+# Create your views here.
 
 @api_view(['GET'])
 def product_list(request):
@@ -208,52 +222,149 @@ def product_search(request):
     return Response(serializer.data)
 
 
-stripe.api_key = settings.STRIPE_SECRET_KEY
-
-
 @api_view(['POST'])
 def create_checkout_session(request):
     cart_code = request.data.get("cart_code")
     email = request.data.get("email")
+    name = request.data.get("name")
+    phone = request.data.get("phone")
+    address = request.data.get("address")
+    payment_method = request.data.get("payment_method")
 
-    cart = Cart.objects.get(cart_code=cart_code)
-    cartitems = cart.cartitems.all()
-
-    if not cartitems.exists():
+    if not all([cart_code, email, name, phone, address, payment_method]):
         return Response(
-            {"error": "Your cart is empty."},
+            {"error": "Please provide all checkout details."},
             status=400
         )
 
-    line_items = []
+    if payment_method not in ["cod", "stripe"]:
+        return Response({"error": "Invalid payment method."}, status=400)
 
-    for item in cartitems:
-        line_items.append({
-            "price_data": {
-                "currency": "usd",
-                "product_data": {
-                    "name": item.product.name,
-                },
-                "unit_amount": int(item.product.price * 100),
-            },
-            "quantity": item.quantity,
-        })
+    if len(address) > 500:
+        return Response(
+            {"error": "Address must be 500 characters or less."},
+            status=400
+        )
 
-    checkout_session = stripe.checkout.Session.create(
-        line_items=line_items,
-        mode="payment",
-        customer_email=email,
-        metadata={
-            "cart_code": cart_code
-        },
-        success_url="http://localhost:5173/success?session_id={CHECKOUT_SESSION_ID}",
-        cancel_url="http://localhost:5173/cancel",
+    cart = get_object_or_404(Cart, cart_code=cart_code)
+    cartitems = cart.cartitems.select_related("product").all()
+
+    if not cartitems.exists():
+        return Response({"error": "Your cart is empty."}, status=400)
+
+    total_amount = sum(
+        (item.product.price * item.quantity for item in cartitems),
+        Decimal("0.00")
     )
 
-    return Response({
-        "checkout_url": checkout_session.url
-    })
+    # Cash on Delivery
+    if payment_method == "cod":
+        with transaction.atomic():
+            order = Order.objects.create(
+                amount=total_amount,
+                currency="usd",
+                customer_name=name,
+                customer_email=email,
+                customer_phone=phone,
+                shipping_address=address,
+                payment_method="cod",
+                status="pending"
+            )
 
+            for item in cartitems:
+                OrderItem.objects.create(
+                    order=order,
+                    product=item.product,
+                    quantity=item.quantity
+                )
+
+            cart.cartitems.all().delete()
+
+        send_order_email(order, "created")
+
+        return Response({
+            "message": "COD order placed successfully.",
+            "order_id": order.id,
+            "status": order.status
+        }, status=201)
+
+    # Stripe Online Payment
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[
+                {
+                    "price_data": {
+                        "currency": "usd",
+                        "product_data": {
+                            "name": item.product.name,
+                        },
+                        "unit_amount": int(item.product.price * 100),
+                    },
+                    "quantity": item.quantity,
+                }
+                for item in cartitems
+            ],
+            mode="payment",
+            customer_email=email,
+            metadata={
+                "cart_code": cart_code,
+                "customer_name": name,
+                "customer_email": email,
+                "customer_phone": phone,
+                "shipping_address": address,
+            },
+            success_url=(
+                "http://localhost:5173/success"
+                "?session_id={CHECKOUT_SESSION_ID}"
+            ),
+            cancel_url="http://localhost:5173/cancel",
+        )
+
+        return Response({
+            "checkout_url": checkout_session.url
+        })
+
+    except Exception as e:
+        return Response(
+            {"error": str(e)},
+            status=400
+        )
+
+
+def send_order_email(order, event):
+    subjects = {
+        "created": "Your Order Has Been Placed",
+        "shipped": "Your Order Has Been Shipped",
+        "delivered": "Your Order Has Been Delivered",
+        "cancelled": "Your Order Has Been Cancelled",
+    }
+
+    messages = {
+        "created": "Thank you! Your order has been placed successfully.",
+        "shipped": "Good news! Your order has been shipped.",
+        "delivered": "Your order has been delivered successfully.",
+        "cancelled": "Your order has been cancelled.",
+    }
+
+    subject = subjects.get(event)
+    message = messages.get(event)
+
+    if subject and message:
+        send_mail(
+            subject,
+            (
+                f"Hello {order.customer_name},\n\n"
+                f"{message}\n\n"
+                f"Order ID: {order.id}\n"
+                f"Amount: {order.amount} {order.currency.upper()}\n"
+                f"Payment Method: {order.payment_method.upper()}\n"
+                f"Order Status: {order.status.upper()}\n\n"
+                "Thank you for shopping with us."
+            ),
+            settings.DEFAULT_FROM_EMAIL,
+            [order.customer_email],
+            fail_silently=True
+        )
 
 
 @csrf_exempt
@@ -268,65 +379,489 @@ def stripe_webhook(request):
             sig_header,
             endpoint_secret
         )
-
-    except ValueError:
-        return HttpResponse(status=400)
-
-    except stripe.error.SignatureVerificationError:
+    except (ValueError, stripe.error.SignatureVerificationError):
         return HttpResponse(status=400)
 
     if event["type"] == "checkout.session.completed":
         session = event["data"]["object"]
         session_data = session.to_dict()
 
-        if session_data["payment_status"] == "paid":
+        if session_data.get("payment_status") == "paid":
             cart_code = session_data.get("metadata", {}).get("cart_code")
 
             if cart_code:
                 fulfil_checkout(session_data, cart_code)
-                print("Payment successful!")
-                print("Cart Code:", cart_code)
-                print("Session ID:", session_data["id"])
-            else:
-                print("Cart code not found in metadata")
 
     return HttpResponse(status=200)
 
 
 def fulfil_checkout(session, cart_code):
-    order = Order.objects.create(
-        stripe_checkout_id=session["id"],
-        amount=session["amount_total"] / 100,
-        currency=session["currency"],
-        customer_email=session["customer_email"],
-        status="completed"
-    )
+    metadata = session.get("metadata", {})
 
-    cart = Cart.objects.get(cart_code=cart_code)
-    cartitems = cart.cartitems.all()
+    cart = Cart.objects.filter(cart_code=cart_code).first()
+    if not cart:
+        return
 
-    for item in cartitems:
-        OrderItem.objects.create(
-            order=order,
-            product=item.product,
-            quantity=item.quantity
+    with transaction.atomic():
+        order, created = Order.objects.get_or_create(
+            stripe_checkout_id=session["id"],
+            defaults={
+                "amount": Decimal(str(session["amount_total"])) / 100,
+                "currency": session["currency"],
+                "customer_name": metadata.get("customer_name", ""),
+                "customer_email": metadata.get("customer_email", ""),
+                "customer_phone": metadata.get("customer_phone", ""),
+                "shipping_address": metadata.get("shipping_address", ""),
+                "payment_method": "stripe",
+                "status": "processing",
+            }
+        )
+
+        if created:
+            for item in cart.cartitems.select_related("product").all():
+                OrderItem.objects.create(
+                    order=order,
+                    product=item.product,
+                    quantity=item.quantity
+                )
+
+            cart.cartitems.all().delete()
+
+    if created:
+        send_order_email(order, "created")
+
+class RegisterView(APIView):
+
+    def post(self, request):
+        username = request.data.get('username', '').strip()
+        email = request.data.get('email', '').strip().lower()
+        password = request.data.get('password', '')
+        first_name = request.data.get('first_name', '')
+        last_name = request.data.get('last_name', '')
+
+        if not username or not email or not password:
+            return Response(
+                {"message": "Username, email and password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if User.objects.filter(username=username).exists():
+            return Response(
+                {"message": "Username already exists."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if User.objects.filter(email__iexact=email).exists():
+            return Response(
+                {"message": "Email already registered."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            validate_password(password)
+        except ValidationError as error:
+            return Response(
+                {"password": list(error.messages)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check pending registration conflicts
+        pending = PendingRegistration.objects.filter(
+            email=email
+        ).first()
+
+        username_pending = PendingRegistration.objects.filter(
+            username=username
+        ).first()
+
+        if username_pending and username_pending.email != email:
+            return Response(
+                {"message": "Username is already being used for registration."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pending and pending.username != username:
+            return Response(
+                {"message": "This email has a pending registration with another username."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        otp = str(secrets.randbelow(900000) + 100000)
+
+        if pending:
+            pending.username = username
+            pending.first_name = first_name
+            pending.last_name = last_name
+            pending.password_hash = make_password(password)
+            pending.otp_hash = make_password(otp)
+            pending.expires_at = timezone.now() + timedelta(minutes=5)
+            pending.attempts = 0
+            pending.last_sent_at = timezone.now()
+            pending.save()
+        else:
+            pending = PendingRegistration.objects.create(
+                username=username,
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                password_hash=make_password(password),
+                otp_hash=make_password(otp),
+                expires_at=timezone.now() + timedelta(minutes=5),
+            )
+
+        try:
+            send_mail(
+                subject="Your Ecommerce Registration OTP",
+                message=(
+                    f"Your OTP is: {otp}\n\n"
+                    "This OTP will expire in 5 minutes."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+        except Exception:
+            return Response(
+                {"message": "Unable to send OTP. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {"message": "OTP sent successfully. Please verify your email."},
+            status=status.HTTP_200_OK
         )
 
 
-class RegisterView(APIView):
+class VerifyRegistrationOTPView(APIView):
+
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+        email = request.data.get('email', '').strip().lower()
+        otp = str(request.data.get('otp', '')).strip()
 
-        if serializer.is_valid():
-            user = serializer.save()
-            token, created = Token.objects.get_or_create(user=user)
+        if not email or not otp:
+            return Response(
+                {"message": "Email and OTP are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
-            return Response({
-                'user': serializer.data,
-                'token': token.key
-            }, status=status.HTTP_201_CREATED)
+        pending = PendingRegistration.objects.filter(
+            email=email
+        ).first()
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not pending:
+            return Response(
+                {"message": "Registration request not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if pending.expires_at <= timezone.now():
+            pending.delete()
+            return Response(
+                {"message": "OTP expired. Please register again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if pending.attempts >= 5:
+            pending.delete()
+            return Response(
+                {"message": "Too many incorrect attempts. Please register again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not check_password(otp, pending.otp_hash):
+            pending.attempts += 1
+            pending.save(update_fields=['attempts'])
+
+            return Response(
+                {"message": "Invalid OTP."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            with transaction.atomic():
+                user = User.objects.create(
+                    username=pending.username,
+                    email=pending.email,
+                    first_name=pending.first_name,
+                    last_name=pending.last_name,
+                    password=pending.password_hash,
+                )
+
+                token, created = Token.objects.get_or_create(user=user)
+
+                user_data = UserSerializer(user).data
+
+                pending.delete()
+
+        except IntegrityError:
+            return Response(
+                {"message": "Username or email already exists."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(
+            {
+                "message": "Email verified and registration successful.",
+                "user": user_data,
+                "token": token.key,
+            },
+            status=status.HTTP_201_CREATED
+        )
+
+
+class ResendRegistrationOTPView(APIView):
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+
+        if not email:
+            return Response(
+                {"message": "Email is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        pending = PendingRegistration.objects.filter(
+            email=email
+        ).first()
+
+        if not pending:
+            return Response(
+                {"message": "Registration request not found."},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if (timezone.now() - pending.last_sent_at).total_seconds() < 60:
+            return Response(
+                {"message": "Please wait 60 seconds before requesting another OTP."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        otp = str(secrets.randbelow(900000) + 100000)
+
+        pending.otp_hash = make_password(otp)
+        pending.expires_at = timezone.now() + timedelta(minutes=5)
+        pending.attempts = 0
+        pending.last_sent_at = timezone.now()
+        pending.save()
+
+        try:
+            send_mail(
+                subject="Your New Ecommerce Registration OTP",
+                message=f"Your new OTP is: {otp}\n\nThis OTP will expire in 5 minutes.",
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[email],
+                fail_silently=False,
+            )
+        except Exception:
+            return Response(
+                {"message": "Unable to send OTP. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {"message": "A new OTP has been sent."},
+            status=status.HTTP_200_OK
+        )
+
+
+
+class ForgotPasswordView(APIView):
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+
+        if not email:
+            return Response(
+                {"message": "Email is required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = User.objects.filter(email__iexact=email).first()
+
+        # Do not reveal whether an email is registered
+        if not user:
+            return Response(
+                {"message": "If this email is registered, an OTP will be sent."},
+                status=status.HTTP_200_OK
+            )
+
+        reset_otp, created = PasswordResetOTP.objects.get_or_create(
+            user=user,
+            defaults={
+                'otp_hash': '',
+                'expires_at': timezone.now(),
+            }
+        )
+
+        # 60-second resend cooldown
+        if not created and (
+            timezone.now() - reset_otp.last_sent_at
+        ).total_seconds() < 60:
+            return Response(
+                {"message": "Please wait 60 seconds before requesting another OTP."},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        otp = str(secrets.randbelow(900000) + 100000)
+
+        reset_otp.otp_hash = make_password(otp)
+        reset_otp.expires_at = timezone.now() + timedelta(minutes=5)
+        reset_otp.attempts = 0
+        reset_otp.verified_at = None
+        reset_otp.reset_token_hash = ''
+        reset_otp.last_sent_at = timezone.now()
+        reset_otp.save()
+
+        try:
+            send_mail(
+                subject="Ecommerce Password Reset OTP",
+                message=(
+                    f"Your password reset OTP is: {otp}\n\n"
+                    "This OTP will expire in 5 minutes."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception:
+            return Response(
+                {"message": "Unable to send OTP. Please try again later."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        return Response(
+            {"message": "If this email is registered, an OTP will be sent."},
+            status=status.HTTP_200_OK
+        )
+
+
+class VerifyResetOTPView(APIView):
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        otp = str(request.data.get('otp', '')).strip()
+
+        if not email or not otp:
+            return Response(
+                {"message": "Email and OTP are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reset_otp = PasswordResetOTP.objects.filter(
+            user__email__iexact=email
+        ).select_related('user').first()
+
+        if not reset_otp:
+            return Response(
+                {"message": "Invalid or expired OTP."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if reset_otp.verified_at:
+            return Response(
+                {"message": "OTP has already been verified."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if reset_otp.expires_at <= timezone.now():
+            reset_otp.delete()
+            return Response(
+                {"message": "OTP expired. Please request a new OTP."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if reset_otp.attempts >= 5:
+            reset_otp.delete()
+            return Response(
+                {"message": "Too many incorrect attempts. Request a new OTP."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not check_password(otp, reset_otp.otp_hash):
+            reset_otp.attempts += 1
+            reset_otp.save(update_fields=['attempts'])
+
+            return Response(
+                {"message": "Invalid OTP."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reset_token = secrets.token_urlsafe(32)
+
+        reset_otp.verified_at = timezone.now()
+        reset_otp.expires_at = timezone.now() + timedelta(minutes=10)
+        reset_otp.reset_token_hash = make_password(reset_token)
+        reset_otp.save()
+
+        return Response(
+            {
+                "message": "OTP verified successfully.",
+                "reset_token": reset_token
+            },
+            status=status.HTTP_200_OK
+        )
+
+
+class ResetPasswordView(APIView):
+
+    def post(self, request):
+        email = request.data.get('email', '').strip().lower()
+        reset_token = request.data.get('reset_token', '')
+        new_password = request.data.get('new_password', '')
+
+        if not email or not reset_token or not new_password:
+            return Response(
+                {"message": "Email, reset token and new password are required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        reset_otp = PasswordResetOTP.objects.filter(
+            user__email__iexact=email
+        ).select_related('user').first()
+
+        if not reset_otp or not reset_otp.verified_at:
+            return Response(
+                {"message": "Please verify your OTP first."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if reset_otp.expires_at <= timezone.now():
+            reset_otp.delete()
+            return Response(
+                {"message": "Reset session expired. Please start again."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if not check_password(
+            reset_token,
+            reset_otp.reset_token_hash
+        ):
+            return Response(
+                {"message": "Invalid reset token."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            validate_password(new_password, user=reset_otp.user)
+        except ValidationError as error:
+            return Response(
+                {"new_password": list(error.messages)},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user = reset_otp.user
+        user.set_password(new_password)
+        user.save(update_fields=['password'])
+
+        # Invalidate the reset token and existing login token
+        reset_otp.delete()
+        Token.objects.filter(user=user).delete()
+
+        return Response(
+            {"message": "Password reset successfully. Please login again."},
+            status=status.HTTP_200_OK
+        )
+
 
 
 class LoginView(ObtainAuthToken):
@@ -459,6 +994,9 @@ class StaffOrderDetailView(APIView):
         return Response(serializer.data)
 
 
+
+
+
 class StaffOrderStatusUpdateView(APIView):
     permission_classes = [IsStaffOrSuperAdmin]
 
@@ -468,33 +1006,37 @@ class StaffOrderStatusUpdateView(APIView):
             if not request.user.has_perm(f"{app_label}.change_order"):
                 return Response(
                     {"error": "You do not have permission to update orders."},
-                    status=status.HTTP_403_FORBIDDEN
+                    status=403
                 )
 
         order = get_object_or_404(Order, pk=pk)
-
         new_status = request.data.get("status")
 
-        valid_statuses = dict(
-            Order._meta.get_field("status").choices
-        )
+        allowed_transitions = {
+            "pending": ["processing"],
+            "processing": ["shipped"],
+            "shipped": ["delivered"],
+        }
 
-        if new_status not in valid_statuses:
+        if new_status not in allowed_transitions.get(order.status, []):
             return Response(
-                {"error": "Invalid order status."},
-                status=status.HTTP_400_BAD_REQUEST
+                {"error": f"Cannot change order from {order.status} to {new_status}."},
+                status=400
             )
 
         order.status = new_status
         order.save(update_fields=["status"])
 
-        serializer = OrderSerializer(order)
+        if new_status == "shipped":
+            send_order_email(order, "shipped")
+        elif new_status == "delivered":
+            send_order_email(order, "delivered")
 
+        serializer = OrderSerializer(order)
         return Response({
             "message": "Order status updated successfully.",
             "data": serializer.data
         })
-
 
 class AdminDashboardOverviewView(APIView):
     permission_classes = [IsStaffOrSuperAdmin]
@@ -942,3 +1484,16 @@ def get_cart(request, cart_code):
 
     serializer = CartSerializer(cart)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def product_reviews(request, slug):
+    product = Product.objects.get(slug=slug)
+
+    reviews = Review.objects.filter(
+        product=product
+    ).select_related('user').order_by('-created')
+
+    serializer = ReviewSerializer(reviews, many=True)
+
+    return Response(serializer.data)

@@ -1,33 +1,69 @@
 
 import { useEffect, useMemo, useState } from 'react'
-import { Search, SlidersHorizontal, ArrowUpDown, ChevronLeft, ChevronRight } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import {
+  Search,
+  SlidersHorizontal,
+  ArrowUpDown,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react'
 
-import { getCategories, getShopProducts } from '../../services/productService'
+import {
+  getCategories,
+  getShopProducts,
+  searchProducts,
+} from '../../services/productService'
+
 import ProductCard from '../../components/products/ProductCard'
 
 const PRODUCTS_PER_PAGE = 6
 
 export default function Shop() {
+  const [searchParams, setSearchParams] = useSearchParams()
+
   const [products, setProducts] = useState([])
   const [categories, setCategories] = useState([])
-  const [search, setSearch] = useState('')
-  const [category, setCategory] = useState('all')
+
+  const [search, setSearch] = useState(
+    searchParams.get('search') || ''
+  )
+
+  const [searchResultIds, setSearchResultIds] = useState(null)
+  const [searching, setSearching] = useState(false)
+
+  const [category, setCategory] = useState(
+    searchParams.get('category') || 'all'
+  )
+
   const [sort, setSort] = useState('default')
   const [minPrice, setMinPrice] = useState('')
   const [maxPrice, setMaxPrice] = useState('')
   const [page, setPage] = useState(1)
+
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
+  // Load products and categories
   useEffect(() => {
     const loadData = async () => {
       try {
         const [productData, categoryData] = await Promise.all([
           getShopProducts(),
-          getCategories()
+          getCategories(),
         ])
-        setProducts(productData)
-        setCategories(categoryData)
+
+        setProducts(
+          Array.isArray(productData)
+            ? productData
+            : productData?.results || productData?.data || []
+        )
+
+        setCategories(
+          Array.isArray(categoryData)
+            ? categoryData
+            : categoryData?.results || categoryData?.data || []
+        )
       } catch (err) {
         console.error(err)
         setError('Unable to load products.')
@@ -35,42 +71,143 @@ export default function Shop() {
         setLoading(false)
       }
     }
+
     loadData()
   }, [])
 
+  // Read search and category from URL
+  useEffect(() => {
+    setSearch(searchParams.get('search') || '')
+    setCategory(searchParams.get('category') || 'all')
+  }, [searchParams])
+
+  // Backend product search
+  useEffect(() => {
+    const query = search.trim()
+    let active = true
+
+    if (!query) {
+      setSearchResultIds(null)
+      setSearching(false)
+      return
+    }
+
+    const runSearch = async () => {
+      try {
+        setSearching(true)
+
+        const result = await searchProducts(query)
+
+        if (active) {
+          const items = Array.isArray(result)
+            ? result
+            : result?.results || result?.data || []
+
+          setSearchResultIds(items.map(item => item.id))
+        }
+      } catch (err) {
+        console.error('Product search error:', err)
+
+        if (active) {
+          setSearchResultIds([])
+        }
+      } finally {
+        if (active) {
+          setSearching(false)
+        }
+      }
+    }
+
+    runSearch()
+
+    return () => {
+      active = false
+    }
+  }, [search])
+
+  // Category selection
+  const handleCategoryChange = (slug) => {
+    setCategory(slug)
+
+    setSearchParams(prev => {
+      const params = new URLSearchParams(prev)
+
+      if (slug === 'all') {
+        params.delete('category')
+      } else {
+        params.set('category', slug)
+      }
+
+      return params
+    })
+  }
+
+  // Filter and sort products
   const filteredProducts = useMemo(() => {
     let result = [...products]
 
-    if (search.trim()) {
+    // Backend search results
+    if (searchResultIds !== null) {
+      const matchingIds = new Set(searchResultIds)
+
       result = result.filter(product =>
-        product.name.toLowerCase().includes(search.toLowerCase())
+        matchingIds.has(product.id)
       )
     }
 
+    // Category filter
     if (category !== 'all') {
-      result = result.filter(product => product.category_slug === category)
+      result = result.filter(product => {
+        const productCategorySlug =
+          product.category_slug || product.category?.slug
+
+        return productCategorySlug === category
+      })
     }
 
+    // Minimum price
     if (minPrice !== '') {
-      result = result.filter(product => Number(product.price) >= Number(minPrice))
+      result = result.filter(
+        product => Number(product.price) >= Number(minPrice)
+      )
     }
 
+    // Maximum price
     if (maxPrice !== '') {
-      result = result.filter(product => Number(product.price) <= Number(maxPrice))
+      result = result.filter(
+        product => Number(product.price) <= Number(maxPrice)
+      )
     }
 
+    // Sorting
     if (sort === 'price-low') {
-      result.sort((a, b) => Number(a.price) - Number(b.price))
+      result.sort(
+        (a, b) => Number(a.price) - Number(b.price)
+      )
     } else if (sort === 'price-high') {
-      result.sort((a, b) => Number(b.price) - Number(a.price))
+      result.sort(
+        (a, b) => Number(b.price) - Number(a.price)
+      )
     } else if (sort === 'name') {
-      result.sort((a, b) => a.name.localeCompare(b.name))
+      result.sort(
+        (a, b) => a.name.localeCompare(b.name)
+      )
     }
 
     return result
-  }, [products, search, category, minPrice, maxPrice, sort])
+  }, [
+    products,
+    searchResultIds,
+    category,
+    minPrice,
+    maxPrice,
+    sort,
+  ])
 
-  const totalPages = Math.ceil(filteredProducts.length / PRODUCTS_PER_PAGE)
+  // Pagination
+  const totalPages = Math.ceil(
+    filteredProducts.length / PRODUCTS_PER_PAGE
+  )
 
   const visibleProducts = filteredProducts.slice(
     (page - 1) * PRODUCTS_PER_PAGE,
@@ -81,6 +218,7 @@ export default function Shop() {
     setPage(1)
   }, [search, category, minPrice, maxPrice, sort])
 
+  // Reset filters
   const resetFilters = () => {
     setSearch('')
     setCategory('all')
@@ -88,34 +226,55 @@ export default function Shop() {
     setMinPrice('')
     setMaxPrice('')
     setPage(1)
+
+    setSearchParams({})
   }
 
   return (
     <main className="bg-[#FAFAF9] min-h-screen">
 
+      {/* Page Header */}
       <section className="bg-[#171717] text-white py-10 sm:py-14">
         <div className="max-w-7xl mx-auto px-4 sm:px-5">
-          <p className="text-emerald-400 text-xs font-bold tracking-widest">OUR COLLECTION</p>
-          <h1 className="text-3xl sm:text-4xl font-bold mt-2">Shop All Products</h1>
-          <p className="text-gray-400 text-sm mt-3">Find something you will love.</p>
+
+          <p className="text-emerald-400 text-xs font-bold tracking-widest">
+            OUR COLLECTION
+          </p>
+
+          <h1 className="text-3xl sm:text-4xl font-bold mt-2">
+            Shop All Products
+          </h1>
+
+          <p className="text-gray-400 text-sm mt-3">
+            Find something you will love.
+          </p>
+
         </div>
       </section>
 
+      {/* Shop Content */}
       <section className="max-w-7xl mx-auto px-3 sm:px-5 py-8 sm:py-12">
 
+        {/* Search and Sorting */}
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
+
           <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3 py-3 flex-1">
+
             <Search size={18} className="text-gray-400 shrink-0" />
+
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
               placeholder="Search products..."
               className="w-full min-w-0 text-sm outline-none"
             />
+
           </div>
 
           <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-lg px-3">
+
             <ArrowUpDown size={17} className="text-[#047857]" />
+
             <select
               value={sort}
               onChange={e => setSort(e.target.value)}
@@ -126,39 +285,69 @@ export default function Shop() {
               <option value="price-high">Price: High to Low</option>
               <option value="name">Name: A to Z</option>
             </select>
+
           </div>
+
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-5 sm:gap-7">
 
+          {/* Filters Sidebar */}
           <aside className="bg-white rounded-xl border border-gray-100 p-4 sm:p-5 h-fit">
+
             <div className="flex items-center gap-2 mb-5">
+
               <SlidersHorizontal size={18} className="text-[#047857]" />
-              <h2 className="font-bold">Filters</h2>
+
+              <h2 className="font-bold">
+                Filters
+              </h2>
+
             </div>
 
-            <h3 className="font-semibold text-sm mb-3">Categories</h3>
+            {/* Categories */}
+            <h3 id="categories" className="font-semibold text-sm mb-3 scroll-mt-24">
+              Categories
+            </h3>
+
             <div className="grid grid-cols-2 lg:grid-cols-1 gap-2">
+
               <button
-                onClick={() => setCategory('all')}
-                className={`text-left text-sm py-1 ${category === 'all' ? 'text-[#047857] font-bold' : 'text-gray-600'}`}
+                onClick={() => handleCategoryChange('all')}
+                className={`text-left text-sm py-1 ${
+                  category === 'all'
+                    ? 'text-[#047857] font-bold'
+                    : 'text-gray-600'
+                }`}
               >
                 All Categories
               </button>
+
               {categories.map(item => (
                 <button
                   key={item.id}
-                  onClick={() => setCategory(item.slug)}
-                  className={`text-left text-sm py-1 ${category === item.slug ? 'text-[#047857] font-bold' : 'text-gray-600'}`}
+                  onClick={() => handleCategoryChange(item.slug)}
+                  className={`text-left text-sm py-1 ${
+                    category === item.slug
+                      ? 'text-[#047857] font-bold'
+                      : 'text-gray-600'
+                  }`}
                 >
                   {item.name}
                 </button>
               ))}
+
             </div>
 
+            {/* Price Range */}
             <div className="border-t border-gray-100 mt-5 pt-5">
-              <h3 className="font-semibold text-sm mb-3">Price Range</h3>
+
+              <h3 className="font-semibold text-sm mb-3">
+                Price Range
+              </h3>
+
               <div className="flex gap-2">
+
                 <input
                   type="number"
                   min="0"
@@ -167,6 +356,7 @@ export default function Shop() {
                   placeholder="Min ৳"
                   className="w-1/2 min-w-0 border rounded-lg p-2 text-xs outline-none"
                 />
+
                 <input
                   type="number"
                   min="0"
@@ -175,41 +365,76 @@ export default function Shop() {
                   placeholder="Max ৳"
                   className="w-1/2 min-w-0 border rounded-lg p-2 text-xs outline-none"
                 />
+
               </div>
+
             </div>
 
+            {/* Reset */}
             <button
               onClick={resetFilters}
               className="w-full mt-5 border border-[#047857] text-[#047857] rounded-lg py-2.5 text-sm font-semibold hover:bg-[#047857] hover:text-white transition"
             >
               Reset Filters
             </button>
+
           </aside>
 
+          {/* Products */}
           <div className="lg:col-span-3">
+
             <div className="flex justify-between items-center mb-4">
+
               <p className="text-xs sm:text-sm text-gray-500">
-                {loading ? 'Loading...' : `${filteredProducts.length} products found`}
+                {loading
+                  ? 'Loading...'
+                  : searching
+                    ? 'Searching...'
+                    : `${filteredProducts.length} products found`}
               </p>
+
               <p className="text-xs text-gray-500">
                 Page {totalPages ? page : 0} of {totalPages}
               </p>
+
             </div>
 
             {loading ? (
-              <p className="text-center py-16 text-gray-500">Loading products...</p>
+
+              <p className="text-center py-16 text-gray-500">
+                Loading products...
+              </p>
+
             ) : error ? (
-              <p className="text-center py-16 text-red-600">{error}</p>
+
+              <p className="text-center py-16 text-red-600">
+                {error}
+              </p>
+
+            ) : searching ? (
+
+              <p className="text-center py-16 text-gray-500">
+                Searching products...
+              </p>
+
             ) : visibleProducts.length ? (
+
               <>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-5">
+
                   {visibleProducts.map(product => (
-                    <ProductCard key={product.id} product={product} />
+                    <ProductCard
+                      key={product.id}
+                      product={product}
+                    />
                   ))}
+
                 </div>
 
+                {/* Pagination */}
                 {totalPages > 1 && (
                   <div className="flex justify-center items-center gap-2 mt-9">
+
                     <button
                       disabled={page === 1}
                       onClick={() => setPage(p => p - 1)}
@@ -219,7 +444,10 @@ export default function Shop() {
                       <ChevronLeft size={19} />
                     </button>
 
-                    {Array.from({ length: totalPages }, (_, i) => i + 1).map(number => (
+                    {Array.from(
+                      { length: totalPages },
+                      (_, i) => i + 1
+                    ).map(number => (
                       <button
                         key={number}
                         onClick={() => setPage(number)}
@@ -241,21 +469,41 @@ export default function Shop() {
                     >
                       <ChevronRight size={19} />
                     </button>
+
                   </div>
                 )}
+
               </>
+
             ) : (
+
               <div className="bg-white rounded-xl p-10 text-center">
-                <h3 className="font-bold text-lg">No products found</h3>
-                <p className="text-gray-500 text-sm mt-2">Try changing your filters.</p>
-                <button onClick={resetFilters} className="mt-4 bg-[#047857] text-white px-5 py-2 rounded-lg text-sm">
+
+                <h3 className="font-bold text-lg">
+                  No products found
+                </h3>
+
+                <p className="text-gray-500 text-sm mt-2">
+                  Try changing your filters.
+                </p>
+
+                <button
+                  onClick={resetFilters}
+                  className="mt-4 bg-[#047857] text-white px-5 py-2 rounded-lg text-sm"
+                >
                   Clear Filters
                 </button>
+
               </div>
+
             )}
+
           </div>
+
         </div>
+
       </section>
+
     </main>
   )
 }

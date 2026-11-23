@@ -28,6 +28,10 @@ import AdminOrders from "./pages/admin/AdminOrders";
 import AdminStaff from "./pages/admin/AdminStaff";
 import AdminReviews from "./pages/admin/AdminReviews";
 
+import Wishlist from "./pages/customer/Wishlist";
+
+import ForgotPassword from './pages/auth/ForgotPassword'
+
 function App() {
   return (
     <AuthProvider>
@@ -46,6 +50,9 @@ function App() {
           <Route path="/register" element={<Register />} />
 
           <Route path="/dashboard" element={<CustomerDashboard />} />
+          <Route path="/wishlist" element={<Wishlist />} />
+
+          <Route path="/forgot-password" element={<ForgotPassword />} />
 
           <Route
             path="/admin/*"
@@ -136,6 +143,8 @@ function App() {
     </RoleRoute>
   }
 />
+
+
         </Routes>
 
         <Footer />

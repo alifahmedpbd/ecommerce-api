@@ -7,10 +7,15 @@ User = get_user_model()
 
 # Product List Serializer
 class ProductListSerializer(serializers.ModelSerializer):
+    category_slug = serializers.SlugRelatedField(
+        source='category',
+        slug_field='slug',
+        read_only=True
+    )
 
     class Meta:
         model = Product
-        fields = ["id", "name", "slug", "image", "price"]
+        fields = ['id', 'name', 'slug', 'image', 'price', 'category_slug']
 
 
 # Product Detail Serializer

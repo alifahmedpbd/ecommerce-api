@@ -67,6 +67,14 @@ export default function Login() {
         </button>
 
         <p className="text-center text-sm text-gray-500 mt-6">
+          <div className="flex justify-end -mt-3 mb-6">
+            <Link to="/forgot-password" className="text-sm text-[#047857] font-semibold hover:underline">
+            Forgot Password?
+           </Link>
+          </div>
+        </p>
+
+        <p className="text-center text-sm text-gray-500 mt-6">
           Don't have an account?{' '}
           <Link to="/register" className="text-[#047857] font-semibold">
             Register

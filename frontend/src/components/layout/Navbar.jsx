@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   Search,
   ShoppingBag,
+  Heart,
   UserRound,
   Menu,
   X,
@@ -13,46 +14,102 @@ import {
 } from "lucide-react";
 
 import { getCart } from "../../services/cartService";
+import { getWishlist } from "../../services/wishlistService";
 import { useAuth } from "../../context/AuthContext";
 
 export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [cartCount, setCartCount] = useState(0);
+  const [wishlistCount, setWishlistCount] = useState(0);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
 
+  // Fetch Cart Count
   const fetchCartCount = async () => {
     try {
       const cart = await getCart();
+
       const total = (cart.cartitems || []).reduce(
         (sum, item) => sum + Number(item.quantity || 0),
         0
       );
+
       setCartCount(total);
-    } catch {
+    } catch (error) {
       setCartCount(0);
     }
   };
 
+  // Fetch Wishlist Count
+  const fetchWishlistCount = async () => {
+    if (!user) {
+      setWishlistCount(0);
+      return;
+    }
+
+    try {
+      const data = await getWishlist();
+
+      const items = Array.isArray(data)
+        ? data
+        : data?.results || data?.data || [];
+
+      setWishlistCount(items.length);
+    } catch (error) {
+      console.error("Wishlist count error:", error);
+      setWishlistCount(0);
+    }
+  };
+
+  // Cart and Wishlist Update Listeners
   useEffect(() => {
     fetchCartCount();
+    fetchWishlistCount();
 
-    const handleCartUpdate = () => fetchCartCount();
+    const handleCartUpdate = () => {
+      fetchCartCount();
+    };
+
+    const handleWishlistUpdate = () => {
+      fetchWishlistCount();
+    };
 
     window.addEventListener("cartUpdated", handleCartUpdate);
+    window.addEventListener("wishlistUpdated", handleWishlistUpdate);
 
     return () => {
       window.removeEventListener("cartUpdated", handleCartUpdate);
+      window.removeEventListener("wishlistUpdated", handleWishlistUpdate);
     };
-  }, []);
+  }, [user]);
 
+  // Search
+  const handleSearch = (event) => {
+    event.preventDefault();
+
+    const query = searchQuery.trim();
+
+    if (!query) return;
+
+    navigate(`/shop?search=${encodeURIComponent(query)}`);
+
+    setSearchQuery("");
+    setMenuOpen(false);
+  };
+
+  // Logout
   const handleLogout = async () => {
     try {
       await logout();
+
       setMenuOpen(false);
       setProfileOpen(false);
+      setWishlistCount(0);
+      setCartCount(0);
+
       navigate("/login");
     } catch (error) {
       console.error("Logout error:", error);
@@ -70,11 +127,10 @@ export default function Navbar() {
         : `/media/${user.profile_picture}`
     : null;
 
-  // Determine user role
+  // Determine User Role
   const role = user?.is_superuser
     ? "admin"
-    : user?.role ||
-      (user?.is_staff ? "staff" : "customer");
+    : user?.role || (user?.is_staff ? "staff" : "customer");
 
   const goToDashboard = (path) => {
     navigate(path);
@@ -89,7 +145,7 @@ export default function Navbar() {
         <div className="h-20 flex items-center justify-between gap-6">
 
           {/* Logo */}
-          <Link to="/" className="text-2xl font-bold tracking-tight">
+          <Link to="/" className="text-2xl font-bold tracking-tight shrink-0">
             <span className="text-[#171717]">API</span>
             <span className="text-[#047857]">Store</span>
           </Link>
@@ -98,21 +154,45 @@ export default function Navbar() {
           <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
             <Link to="/">Home</Link>
             <Link to="/shop">Shop</Link>
-            <Link to="/categories">Categories</Link>
+            <Link to="/shop#categories">Categories</Link>
             <Link to="/about">About</Link>
           </nav>
 
           {/* Search */}
-          <div className="hidden lg:flex items-center bg-[#FAFAF9] rounded-full px-4 py-3 w-64">
+          <form
+            onSubmit={handleSearch}
+            className="hidden lg:flex items-center bg-[#FAFAF9] rounded-full px-4 py-3 w-64"
+          >
             <Search size={18} className="text-gray-400" />
+
             <input
               type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search products..."
               className="bg-transparent outline-none ml-3 w-full text-sm"
             />
-          </div>
+          </form>
 
           <div className="flex items-center gap-4">
+
+            {/* Wishlist */}
+            <Link
+              to="/wishlist"
+              className="relative p-1"
+              aria-label="Wishlist"
+            >
+              <Heart
+                size={23}
+                className="hover:text-[#047857] transition"
+              />
+
+              {wishlistCount > 0 && (
+                <span className="absolute -top-2 -right-2 min-w-[19px] h-[19px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white">
+                  {wishlistCount > 99 ? "99+" : wishlistCount}
+                </span>
+              )}
+            </Link>
 
             {/* Cart */}
             <Link to="/cart" className="relative p-1">
@@ -169,12 +249,13 @@ export default function Navbar() {
                         <p className="font-semibold text-gray-900">
                           {displayName}
                         </p>
+
                         <p className="text-xs text-gray-500 truncate">
                           {user.email}
                         </p>
                       </div>
 
-                      {/* Customer Dashboard - Everyone */}
+                      {/* Customer Dashboard */}
                       <button
                         onClick={() => goToDashboard("/dashboard")}
                         className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:bg-emerald-50 hover:text-[#047857]"
@@ -183,7 +264,7 @@ export default function Navbar() {
                         Customer Dashboard
                       </button>
 
-                      {/* Staff Dashboard - Staff only */}
+                      {/* Staff Dashboard */}
                       {role === "staff" && (
                         <button
                           onClick={() => goToDashboard("/staff")}
@@ -194,7 +275,7 @@ export default function Navbar() {
                         </button>
                       )}
 
-                      {/* Admin Dashboard - Admin only */}
+                      {/* Admin Dashboard */}
                       {role === "admin" && (
                         <button
                           onClick={() => goToDashboard("/admin")}
@@ -205,6 +286,7 @@ export default function Navbar() {
                         </button>
                       )}
 
+                      {/* Logout */}
                       <div className="border-t border-gray-100 mt-1 pt-1">
                         <button
                           onClick={handleLogout}
@@ -261,6 +343,50 @@ export default function Navbar() {
               About
             </Link>
 
+            {/* Mobile Search */}
+            <form
+              onSubmit={handleSearch}
+              className="flex items-center bg-[#FAFAF9] rounded-lg px-3 py-3"
+            >
+              <Search size={18} className="text-gray-400" />
+
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search products..."
+                className="bg-transparent outline-none ml-3 w-full text-sm"
+              />
+            </form>
+
+            <Link
+              to="/wishlist"
+              onClick={() => setMenuOpen(false)}
+              className="flex items-center gap-2"
+            >
+              <Heart size={18} />
+              Wishlist
+              {wishlistCount > 0 && (
+                <span className="text-red-500 font-bold">
+                  ({wishlistCount})
+                </span>
+              )}
+            </Link>
+
+            <Link
+              to="/cart"
+              onClick={() => setMenuOpen(false)}
+              className="flex items-center gap-2"
+            >
+              <ShoppingBag size={18} />
+              Cart
+              {cartCount > 0 && (
+                <span className="text-[#047857] font-bold">
+                  ({cartCount})
+                </span>
+              )}
+            </Link>
+
             {!loading && (
               user ? (
                 <>
@@ -285,7 +411,6 @@ export default function Navbar() {
                     </div>
                   </div>
 
-                  {/* Customer Dashboard */}
                   <button
                     onClick={() => goToDashboard("/dashboard")}
                     className="flex items-center gap-2 text-gray-700 hover:text-[#047857]"
@@ -294,7 +419,6 @@ export default function Navbar() {
                     Customer Dashboard
                   </button>
 
-                  {/* Staff Dashboard */}
                   {role === "staff" && (
                     <button
                       onClick={() => goToDashboard("/staff")}
@@ -305,7 +429,6 @@ export default function Navbar() {
                     </button>
                   )}
 
-                  {/* Admin Dashboard */}
                   {role === "admin" && (
                     <button
                       onClick={() => goToDashboard("/admin")}

@@ -1,8 +1,9 @@
 from django.db import models
+from django.utils import timezone
 from django.utils.text import slugify
 from django.contrib.auth.models import AbstractUser
 
-from ecommerceApiProject import settings
+from django.conf import settings
 # Create your models here.
 
 # Custom User Model
@@ -147,22 +148,100 @@ class Wishlist(models.Model):
         return f"{self.user.username} - {self.product.name}"
 
     
-
 class Order(models.Model):
-    stripe_checkout_id = models.CharField(max_length=255, unique=True)
+    PAYMENT_METHOD_CHOICES = [
+        ("cod", "Cash on Delivery"),
+        ("stripe", "Online Payment"),
+    ]
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("processing", "Processing"),
+        ("shipped", "Shipped"),
+        ("delivered", "Delivered"),
+        ("cancelled", "Cancelled"),
+        ("failed", "Failed"),
+    ]
+
+    stripe_checkout_id = models.CharField(
+        max_length=255,
+        unique=True,
+        null=True,
+        blank=True
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    currency = models.CharField(max_length=10)
-    customer_email = models.EmailField()
-    status = models.CharField(max_length=50, choices=[("pending", "Pending"), ("completed", "Completed"), ("failed", "Failed")])
+    currency = models.CharField(max_length=10, default="usd")
+
+    customer_name = models.CharField(max_length=255, default="")
+    customer_email = models.EmailField(default="")
+    customer_phone = models.CharField(max_length=30, default="")
+    shipping_address = models.TextField(default="")
+
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES, default="cod"
+    )
+
+    status = models.CharField(
+        max_length=50,
+        choices=STATUS_CHOICES,
+        default="pending"
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"Order {self.stripe_checkout_id} - {self.status}"
+        return f"Order {self.id} - {self.status}"
+
 
 class OrderItem(models.Model):
-    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="items")
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name="items"
+    )
     product = models.ForeignKey(Product, on_delete=models.CASCADE)
     quantity = models.IntegerField(default=1)
 
     def __str__(self):
-        return f"Order {self.product.name} - {self.order.stripe_checkout_id} "
+        return f"Order {self.product.name} - {self.order.id}"
+
+
+
+class PendingRegistration(models.Model):
+    username = models.CharField(max_length=150, unique=True)
+    email = models.EmailField(unique=True)
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+
+    # Password and OTP will be stored as hashes
+    password_hash = models.CharField(max_length=128)
+    otp_hash = models.CharField(max_length=128)
+
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.email
+
+
+class PasswordResetOTP(models.Model):
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="password_reset_otp"
+    )
+    otp_hash = models.CharField(max_length=128)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveIntegerField(default=0)
+    verified_at = models.DateTimeField(null=True, blank=True)
+    reset_token_hash = models.CharField(max_length=128, blank=True)
+    last_sent_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.user.email
+
+    

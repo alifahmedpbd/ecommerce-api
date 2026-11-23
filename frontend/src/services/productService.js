@@ -46,3 +46,12 @@ export const getShopProducts = async () => {
     new Map(allProducts.map((product) => [product.id, product])).values()
   )
 }
+
+
+export const searchProducts = async (query) => {
+  const response = await api.get('/products/search/', {
+    params: { query },
+  })
+  return response.data
+}
+
