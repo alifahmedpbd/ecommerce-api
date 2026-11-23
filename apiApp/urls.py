@@ -36,6 +36,7 @@ urlpatterns = [
     path('my-reviews/', views.CustomerReviewsView.as_view(), name='customer_reviews'),
 
     path('staff/orders/', views.StaffOrderListView.as_view(), name='staff-orders'),
+    path('staff/orders/<int:pk>/', views.StaffOrderDetailView.as_view(), name='staff-order-detail'),
     path('staff/orders/<int:pk>/status/', views.StaffOrderStatusUpdateView.as_view(), name='staff-order-status-update'),
 
     # Admin and Staff Dashboard

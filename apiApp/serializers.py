@@ -1,7 +1,7 @@
 
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Cart, CartItem, Order, OrderItem, Product, Category, Review, Wishlist
+from .models import Cart, CartItem, CustomUser, Order, OrderItem, Product, Category, Review, Wishlist
 
 User = get_user_model()
 
@@ -102,21 +102,36 @@ class CartStatSerializer(serializers.ModelSerializer):
         return total
 
 class UserSerializer(serializers.ModelSerializer):
-    profile_picture = serializers.ImageField(
-        required=False,
-        allow_null=True
-    )
+    role = serializers.SerializerMethodField()
 
     class Meta:
-        model = User
+        model = CustomUser
         fields = [
-            "id",
-            "username",
-            "first_name",
-            "last_name",
-            "email",
-            "profile_picture",
+            'id',
+            'username',
+            'first_name',
+            'last_name',
+            'email',
+            'profile_picture',
+            'is_staff',
+            'is_superuser',
+            'role',
         ]
+        read_only_fields = [
+            'is_staff',
+            'is_superuser',
+            'role',
+        ]
+
+    def get_role(self, obj):
+        if obj.is_superuser:
+            return 'admin'
+
+        if obj.groups.filter(name='Staff').exists():
+            return 'staff'
+
+        return 'customer'
+        
 
 class ReviewSerializer(serializers.ModelSerializer):
     user = UserSerializer(read_only=True)
@@ -156,6 +171,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'product', 'quantity']
 
 
+
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
 
@@ -164,12 +180,14 @@ class OrderSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'stripe_checkout_id',
+            'customer_email',
             'amount',
             'currency',
             'status',
             'created_at',
             'items'
         ]
+
 
 class AdminProductSerializer(serializers.ModelSerializer):
     class Meta:

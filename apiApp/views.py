@@ -439,6 +439,26 @@ class StaffOrderListView(APIView):
         return Response(serializer.data)
 
 
+
+class StaffOrderDetailView(APIView):
+    permission_classes = [IsStaffOrSuperAdmin]
+
+    def get(self, request, pk):
+        if not request.user.is_superuser:
+            app_label = Order._meta.app_label
+
+            if not request.user.has_perm(f"{app_label}.view_order"):
+                return Response(
+                    {"error": "You do not have permission to view orders."},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        order = get_object_or_404(Order, pk=pk)
+        serializer = OrderSerializer(order)
+
+        return Response(serializer.data)
+
+
 class StaffOrderStatusUpdateView(APIView):
     permission_classes = [IsStaffOrSuperAdmin]
 
@@ -907,6 +927,8 @@ class AdminAnalyticsView(APIView):
             "order_status": list(order_status),
             "top_products": list(top_products),
         })
+
+
 
 @api_view(["GET"])
 def get_cart(request, cart_code):
