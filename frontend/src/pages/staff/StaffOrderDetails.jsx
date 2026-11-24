@@ -1,8 +1,14 @@
 
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Package, UserRound, Save } from "lucide-react";
 import api from "../../services/api";
+import {
+  ArrowLeft,
+  Package,
+  UserRound,
+  Save,
+  XCircle,
+} from "lucide-react";
 
 export default function StaffOrderDetails() {
   const { id } = useParams();
@@ -55,6 +61,40 @@ export default function StaffOrderDetails() {
       setSaving(false);
     }
   };
+
+
+  const cancelOrder = async () => {
+  const confirmed = window.confirm(
+    `Are you sure you want to cancel Order #${id}?`
+  );
+
+  if (!confirmed) return;
+
+  try {
+    setSaving(true);
+    setError("");
+    setMessage("");
+
+    await api.patch(`/staff/orders/${id}/status/`, {
+      status: "cancelled",
+    });
+
+    setOrder((prev) => ({
+      ...prev,
+      status: "cancelled",
+    }));
+
+    setNewStatus("cancelled");
+    setMessage("Order cancelled successfully.");
+  } catch (err) {
+    setError(
+      err.response?.data?.error || "Unable to cancel order."
+    );
+  } finally {
+    setSaving(false);
+  }
+};
+
 
   if (loading) {
     return <div className="p-10 text-center">Loading order...</div>;
@@ -191,21 +231,63 @@ export default function StaffOrderDetails() {
                   <strong>{formatMoney(order.amount)}</strong>
                 </div>
 
-                <div className="border-t pt-4">
-                  <label className="text-sm font-semibold block mb-2">
-                    Order Status
-                  </label>
+<div className="border-t pt-4">
+  <label className="text-sm font-semibold block mb-2">
+    Order Status
+  </label>
 
-                  <select
-                    value={newStatus}
-                    onChange={(e) => setNewStatus(e.target.value)}
-                    className="w-full border rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                  >
-                    <option value="pending">Pending</option>
-                    <option value="completed">Completed</option>
-                    <option value="failed">Failed</option>
-                  </select>
-                </div>
+  <select
+    value={newStatus}
+    onChange={(e) => setNewStatus(e.target.value)}
+    disabled={
+      saving ||
+      ["cancelled", "delivered", "failed"].includes(order.status)
+    }
+    className="w-full border rounded-lg p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-60"
+  >
+    <option value="pending">Pending</option>
+
+    {order.status === "pending" && (
+      <option value="processing">Processing</option>
+    )}
+
+    {order.status === "processing" && (
+      <option value="shipped">Shipped</option>
+    )}
+
+    {order.status === "shipped" && (
+      <option value="delivered">Delivered</option>
+    )}
+
+    {order.status === "cancelled" && (
+      <option value="cancelled">Cancelled</option>
+    )}
+  </select>
+</div>
+
+<button
+  onClick={saveChanges}
+  disabled={
+    saving ||
+    newStatus === order.status ||
+    ["cancelled", "delivered", "failed"].includes(order.status)
+  }
+  className="w-full bg-[#047857] text-white rounded-lg py-3 flex items-center justify-center gap-2 font-semibold hover:bg-emerald-800 disabled:opacity-50"
+>
+  <Save size={17} />
+  {saving ? "Saving..." : "Save Changes"}
+</button>
+
+{order.status === "pending" && (
+  <button
+    onClick={cancelOrder}
+    disabled={saving}
+    className="w-full bg-red-50 text-red-600 rounded-lg py-3 flex items-center justify-center gap-2 font-semibold hover:bg-red-100 disabled:opacity-50"
+  >
+    <XCircle size={17} />
+    Cancel Order
+  </button>
+)}
 
                 <button
                   onClick={saveChanges}

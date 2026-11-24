@@ -38,6 +38,7 @@ urlpatterns = [
     path('staff/orders/', views.StaffOrderListView.as_view(), name='staff-orders'),
     path('staff/orders/<int:pk>/', views.StaffOrderDetailView.as_view(), name='staff-order-detail'),
     path('staff/orders/<int:pk>/status/', views.StaffOrderStatusUpdateView.as_view(), name='staff-order-status-update'),
+    path('orders/<int:pk>/cancel/', views.customer_cancel_order, name='customer-cancel-order'),
 
     # Admin and Staff Dashboard
     path('dashboard/overview/', views.AdminDashboardOverviewView.as_view(), name='dashboard-overview'),
@@ -70,5 +71,7 @@ urlpatterns = [
     path('forgot-password/', views.ForgotPasswordView.as_view(), name='forgot_password'),
     path('verify-reset-otp/', views.VerifyResetOTPView.as_view(), name='verify_reset_otp'),
     path('reset-password/', views.ResetPasswordView.as_view(), name='reset_password'),
+
+    path('track-order/<str:tracking_id>/', views.track_order, name='track_order'),
     
 ]

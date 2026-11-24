@@ -1,9 +1,9 @@
 
 from decimal import Decimal
-
 from django.contrib.auth import get_user_model
 from django.shortcuts import render
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from .models import Cart, CartItem, Category, Order, OrderItem, Product, Review, Wishlist
 from .serializers import (
@@ -222,6 +222,7 @@ def product_search(request):
     return Response(serializer.data)
 
 
+
 @api_view(['POST'])
 def create_checkout_session(request):
     cart_code = request.data.get("cart_code")
@@ -285,7 +286,9 @@ def create_checkout_session(request):
         return Response({
             "message": "COD order placed successfully.",
             "order_id": order.id,
-            "status": order.status
+            "tracking_id": order.tracking_id,
+            "status": order.status,
+            "payment_method": order.payment_method
         }, status=201)
 
     # Stripe Online Payment
@@ -321,7 +324,9 @@ def create_checkout_session(request):
         )
 
         return Response({
-            "checkout_url": checkout_session.url
+            "message": "Stripe checkout session created.",
+            "checkout_url": checkout_session.url,
+            "session_id": checkout_session.id
         })
 
     except Exception as e:
@@ -329,6 +334,7 @@ def create_checkout_session(request):
             {"error": str(e)},
             status=400
         )
+
 
 
 def send_order_email(order, event):
@@ -356,15 +362,18 @@ def send_order_email(order, event):
                 f"Hello {order.customer_name},\n\n"
                 f"{message}\n\n"
                 f"Order ID: {order.id}\n"
+                f"Tracking ID: {order.tracking_id}\n"
                 f"Amount: {order.amount} {order.currency.upper()}\n"
                 f"Payment Method: {order.payment_method.upper()}\n"
                 f"Order Status: {order.status.upper()}\n\n"
+                "Please keep your Tracking ID safe to track your order.\n\n"
                 "Thank you for shopping with us."
             ),
             settings.DEFAULT_FROM_EMAIL,
             [order.customer_email],
             fail_silently=True
         )
+
 
 
 @csrf_exempt
@@ -996,7 +1005,6 @@ class StaffOrderDetailView(APIView):
 
 
 
-
 class StaffOrderStatusUpdateView(APIView):
     permission_classes = [IsStaffOrSuperAdmin]
 
@@ -1012,6 +1020,24 @@ class StaffOrderStatusUpdateView(APIView):
         order = get_object_or_404(Order, pk=pk)
         new_status = request.data.get("status")
 
+        # Cancel: Staff/Admin can cancel any pending payment method.
+        if new_status == "cancelled":
+            if order.status != "pending":
+                return Response(
+                    {"error": "Only pending orders can be cancelled."},
+                    status=400
+                )
+
+            order.status = "cancelled"
+            order.save(update_fields=["status"])
+            send_order_email(order, "cancelled")
+
+            return Response({
+                "message": "Order cancelled successfully.",
+                "data": OrderSerializer(order).data
+            })
+
+        # Normal order status flow
         allowed_transitions = {
             "pending": ["processing"],
             "processing": ["shipped"],
@@ -1020,7 +1046,9 @@ class StaffOrderStatusUpdateView(APIView):
 
         if new_status not in allowed_transitions.get(order.status, []):
             return Response(
-                {"error": f"Cannot change order from {order.status} to {new_status}."},
+                {
+                    "error": f"Cannot change order from {order.status} to {new_status}."
+                },
                 status=400
             )
 
@@ -1032,11 +1060,51 @@ class StaffOrderStatusUpdateView(APIView):
         elif new_status == "delivered":
             send_order_email(order, "delivered")
 
-        serializer = OrderSerializer(order)
         return Response({
             "message": "Order status updated successfully.",
-            "data": serializer.data
+            "data": OrderSerializer(order).data
         })
+
+
+
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+def customer_cancel_order(request, pk):
+    order = get_object_or_404(Order, pk=pk)
+
+    # Verify order ownership using logged-in user's email
+    if not request.user.email or order.customer_email.lower() != request.user.email.lower():
+        return Response(
+            {"error": "You do not have permission to cancel this order."},
+            status=403
+        )
+
+    # Customer can cancel COD orders only
+    if order.payment_method != "cod":
+        return Response(
+            {"error": "You can only cancel Cash on Delivery orders."},
+            status=400
+        )
+
+    if order.status != "pending":
+        return Response(
+            {"error": "Only pending orders can be cancelled."},
+            status=400
+        )
+
+    order.status = "cancelled"
+    order.save(update_fields=["status"])
+
+    send_order_email(order, "cancelled")
+
+    return Response({
+        "message": "Your order has been cancelled successfully.",
+        "order_id": order.id,
+        "tracking_id": order.tracking_id,
+        "status": order.status
+    })
+
+
 
 class AdminDashboardOverviewView(APIView):
     permission_classes = [IsStaffOrSuperAdmin]
@@ -1497,3 +1565,44 @@ def product_reviews(request, slug):
     serializer = ReviewSerializer(reviews, many=True)
 
     return Response(serializer.data)
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def track_order(request, tracking_id):
+    phone_last4 = request.data.get("phone_last4", "")
+
+    if not phone_last4.isdigit() or len(phone_last4) != 4:
+        return Response(
+            {"error": "Please enter the last 4 digits of your phone number."},
+            status=400
+        )
+
+    order = get_object_or_404(
+        Order,
+        tracking_id=tracking_id
+    )
+
+    stored_phone = "".join(
+        char for char in order.customer_phone if char.isdigit()
+    )
+
+    if not stored_phone.endswith(phone_last4):
+        return Response(
+            {"error": "Tracking ID or phone verification failed."},
+            status=400
+        )
+
+    return Response({
+        "tracking_id": order.tracking_id,
+        "order_id": order.id,
+        "customer_name": order.customer_name,
+        "customer_email": order.customer_email,
+        "customer_phone": order.customer_phone,
+        "shipping_address": order.shipping_address,
+        "amount": order.amount,
+        "currency": order.currency,
+        "payment_method": order.payment_method,
+        "status": order.status,
+        "created_at": order.created_at,
+    })

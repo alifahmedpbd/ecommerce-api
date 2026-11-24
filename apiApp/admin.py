@@ -31,4 +31,22 @@ class CategoryAdmin(admin.ModelAdmin):
 
 
 admin.site.register(Category, CategoryAdmin)
-admin.site.register([Cart, CartItem, Review, ProductRating, Wishlist, Order, OrderItem])
+admin.site.register([Cart, CartItem, Review, ProductRating, Wishlist, OrderItem])
+
+class OrderAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "tracking_id",
+        "customer_name",
+        "customer_email",
+        "payment_method",
+        "status",
+        "created_at",
+    )
+
+    search_fields = ("tracking_id", "customer_name", "customer_email")
+    list_filter = ("status", "payment_method", "created_at")
+    readonly_fields = ("tracking_id",)
+
+
+admin.site.register(Order, OrderAdmin)

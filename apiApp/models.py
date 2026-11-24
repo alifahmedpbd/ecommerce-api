@@ -2,7 +2,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.text import slugify
 from django.contrib.auth.models import AbstractUser
-
+import secrets
 from django.conf import settings
 # Create your models here.
 
@@ -189,9 +189,28 @@ class Order(models.Model):
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+    tracking_id = models.CharField(
+        max_length=30,
+        unique=True,
+        null=True,
+        blank=True,
+        editable=False
+    )
 
     def __str__(self):
         return f"Order {self.id} - {self.status}"
+
+    def save(self, *args, **kwargs):
+        if not self.tracking_id:
+            while True:
+                random_code = secrets.token_hex(2).upper()
+                new_id = f"TRK-27052002{random_code}"
+
+                if not Order.objects.filter(tracking_id=new_id).exists():
+                    self.tracking_id = new_id
+                    break
+
+        super().save(*args, **kwargs)
 
 
 class OrderItem(models.Model):
