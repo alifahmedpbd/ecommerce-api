@@ -11,6 +11,7 @@ import {
   LogOut,
   LayoutDashboard,
   ChevronDown,
+  PackageSearch,
 } from "lucide-react";
 
 import { getCart } from "../../services/cartService";
@@ -27,7 +28,6 @@ export default function Navbar() {
   const { user, logout, loading } = useAuth();
   const navigate = useNavigate();
 
-  // Fetch Cart Count
   const fetchCartCount = async () => {
     try {
       const cart = await getCart();
@@ -38,12 +38,11 @@ export default function Navbar() {
       );
 
       setCartCount(total);
-    } catch (error) {
+    } catch {
       setCartCount(0);
     }
   };
 
-  // Fetch Wishlist Count
   const fetchWishlistCount = async () => {
     if (!user) {
       setWishlistCount(0);
@@ -52,7 +51,6 @@ export default function Navbar() {
 
     try {
       const data = await getWishlist();
-
       const items = Array.isArray(data)
         ? data
         : data?.results || data?.data || [];
@@ -64,18 +62,12 @@ export default function Navbar() {
     }
   };
 
-  // Cart and Wishlist Update Listeners
   useEffect(() => {
     fetchCartCount();
     fetchWishlistCount();
 
-    const handleCartUpdate = () => {
-      fetchCartCount();
-    };
-
-    const handleWishlistUpdate = () => {
-      fetchWishlistCount();
-    };
+    const handleCartUpdate = () => fetchCartCount();
+    const handleWishlistUpdate = () => fetchWishlistCount();
 
     window.addEventListener("cartUpdated", handleCartUpdate);
     window.addEventListener("wishlistUpdated", handleWishlistUpdate);
@@ -86,21 +78,17 @@ export default function Navbar() {
     };
   }, [user]);
 
-  // Search
   const handleSearch = (event) => {
     event.preventDefault();
 
     const query = searchQuery.trim();
-
     if (!query) return;
 
     navigate(`/shop?search=${encodeURIComponent(query)}`);
-
     setSearchQuery("");
     setMenuOpen(false);
   };
 
-  // Logout
   const handleLogout = async () => {
     try {
       await logout();
@@ -116,8 +104,7 @@ export default function Navbar() {
     }
   };
 
-  const displayName =
-    user?.first_name || user?.username || "Customer";
+  const displayName = user?.first_name || user?.username || "Customer";
 
   const profileImage = user?.profile_picture
     ? user.profile_picture.startsWith("http")
@@ -127,7 +114,6 @@ export default function Navbar() {
         : `/media/${user.profile_picture}`
     : null;
 
-  // Determine User Role
   const role = user?.is_superuser
     ? "admin"
     : user?.role || (user?.is_staff ? "staff" : "customer");
@@ -138,33 +124,36 @@ export default function Navbar() {
     setMenuOpen(false);
   };
 
+  const closeMobileMenu = () => setMenuOpen(false);
+
   return (
     <header className="bg-white border-b border-gray-100 sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-5 lg:px-8">
-
         <div className="h-20 flex items-center justify-between gap-6">
-
-          {/* Logo */}
           <Link to="/" className="text-2xl font-bold tracking-tight shrink-0">
             <span className="text-[#171717]">API</span>
             <span className="text-[#047857]">Store</span>
           </Link>
 
-          {/* Desktop Navigation */}
-          <nav className="hidden md:flex items-center gap-8 text-sm font-medium text-gray-600">
-            <Link to="/">Home</Link>
-            <Link to="/shop">Shop</Link>
-            <Link to="/shop#categories">Categories</Link>
-            <Link to="/about">About</Link>
+          <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-gray-600">
+            <Link to="/" className="hover:text-[#047857]">Home</Link>
+            <Link to="/shop" className="hover:text-[#047857]">Shop</Link>
+            <Link to="/shop#categories" className="hover:text-[#047857]">Categories</Link>
+            <Link to="/about" className="hover:text-[#047857]">About</Link>
+            <Link
+              to="/track-order"
+              className="flex items-center gap-1.5 hover:text-[#047857]"
+            >
+              <PackageSearch size={17} />
+              Track Order
+            </Link>
           </nav>
 
-          {/* Search */}
           <form
             onSubmit={handleSearch}
-            className="hidden lg:flex items-center bg-[#FAFAF9] rounded-full px-4 py-3 w-64"
+            className="hidden lg:flex items-center bg-[#FAFAF9] rounded-full px-4 py-3 w-56"
           >
             <Search size={18} className="text-gray-400" />
-
             <input
               type="text"
               value={searchQuery}
@@ -175,18 +164,12 @@ export default function Navbar() {
           </form>
 
           <div className="flex items-center gap-4">
-
-            {/* Wishlist */}
             <Link
               to="/wishlist"
               className="relative p-1"
               aria-label="Wishlist"
             >
-              <Heart
-                size={23}
-                className="hover:text-[#047857] transition"
-              />
-
+              <Heart size={23} className="hover:text-[#047857] transition" />
               {wishlistCount > 0 && (
                 <span className="absolute -top-2 -right-2 min-w-[19px] h-[19px] px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center border-2 border-white">
                   {wishlistCount > 99 ? "99+" : wishlistCount}
@@ -194,10 +177,8 @@ export default function Navbar() {
               )}
             </Link>
 
-            {/* Cart */}
-            <Link to="/cart" className="relative p-1">
+            <Link to="/cart" className="relative p-1" aria-label="Cart">
               <ShoppingBag size={23} />
-
               {cartCount > 0 && (
                 <span className="absolute -top-2 -right-2 min-w-[19px] h-[19px] px-1 rounded-full bg-[#047857] text-white text-[10px] font-bold flex items-center justify-center border-2 border-white">
                   {cartCount > 99 ? "99+" : cartCount}
@@ -205,11 +186,9 @@ export default function Navbar() {
               )}
             </Link>
 
-            {/* Desktop Profile */}
             {!loading && (
               user ? (
                 <div className="hidden sm:block relative">
-
                   <button
                     onClick={() => setProfileOpen(!profileOpen)}
                     className="flex items-center gap-2 hover:text-[#047857] transition"
@@ -219,9 +198,6 @@ export default function Navbar() {
                         src={profileImage}
                         alt="Profile"
                         className="w-9 h-9 rounded-full object-cover border border-gray-200"
-                        onError={(e) => {
-                          e.currentTarget.style.display = "none";
-                        }}
                       />
                     ) : (
                       <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
@@ -229,33 +205,20 @@ export default function Navbar() {
                       </div>
                     )}
 
-                    <span className="text-sm font-semibold">
-                      {displayName}
-                    </span>
-
+                    <span className="text-sm font-semibold">{displayName}</span>
                     <ChevronDown
                       size={16}
-                      className={`transition-transform ${
-                        profileOpen ? "rotate-180" : ""
-                      }`}
+                      className={`transition-transform ${profileOpen ? "rotate-180" : ""}`}
                     />
                   </button>
 
                   {profileOpen && (
                     <div className="absolute right-0 top-full mt-3 w-60 bg-white border border-gray-100 rounded-xl shadow-xl py-2 z-50">
-
-                      {/* User Information */}
                       <div className="px-4 py-3 border-b border-gray-100">
-                        <p className="font-semibold text-gray-900">
-                          {displayName}
-                        </p>
-
-                        <p className="text-xs text-gray-500 truncate">
-                          {user.email}
-                        </p>
+                        <p className="font-semibold text-gray-900">{displayName}</p>
+                        <p className="text-xs text-gray-500 truncate">{user.email}</p>
                       </div>
 
-                      {/* Customer Dashboard */}
                       <button
                         onClick={() => goToDashboard("/dashboard")}
                         className="w-full flex items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:bg-emerald-50 hover:text-[#047857]"
@@ -264,7 +227,6 @@ export default function Navbar() {
                         Customer Dashboard
                       </button>
 
-                      {/* Staff Dashboard */}
                       {role === "staff" && (
                         <button
                           onClick={() => goToDashboard("/staff")}
@@ -275,7 +237,6 @@ export default function Navbar() {
                         </button>
                       )}
 
-                      {/* Admin Dashboard */}
                       {role === "admin" && (
                         <button
                           onClick={() => goToDashboard("/admin")}
@@ -286,7 +247,6 @@ export default function Navbar() {
                         </button>
                       )}
 
-                      {/* Logout */}
                       <div className="border-t border-gray-100 mt-1 pt-1">
                         <button
                           onClick={handleLogout}
@@ -296,7 +256,6 @@ export default function Navbar() {
                           Logout
                         </button>
                       </div>
-
                     </div>
                   )}
                 </div>
@@ -311,7 +270,6 @@ export default function Navbar() {
               )
             )}
 
-            {/* Mobile Menu Button */}
             <button
               onClick={() => setMenuOpen(!menuOpen)}
               className="md:hidden"
@@ -319,37 +277,30 @@ export default function Navbar() {
             >
               {menuOpen ? <X size={24} /> : <Menu size={24} />}
             </button>
-
           </div>
         </div>
 
-        {/* Mobile Menu */}
         {menuOpen && (
           <nav className="md:hidden py-5 border-t flex flex-col gap-4 text-sm">
+            <Link onClick={closeMobileMenu} to="/">Home</Link>
+            <Link onClick={closeMobileMenu} to="/shop">Shop</Link>
+            <Link onClick={closeMobileMenu} to="/shop#categories">Categories</Link>
+            <Link onClick={closeMobileMenu} to="/about">About</Link>
 
-            <Link onClick={() => setMenuOpen(false)} to="/">
-              Home
+            <Link
+              to="/track-order"
+              onClick={closeMobileMenu}
+              className="flex items-center gap-2 text-emerald-700 font-semibold"
+            >
+              <PackageSearch size={18} />
+              Track Order
             </Link>
 
-            <Link onClick={() => setMenuOpen(false)} to="/shop">
-              Shop
-            </Link>
-
-            <Link onClick={() => setMenuOpen(false)} to="/categories">
-              Categories
-            </Link>
-
-            <Link onClick={() => setMenuOpen(false)} to="/about">
-              About
-            </Link>
-
-            {/* Mobile Search */}
             <form
               onSubmit={handleSearch}
               className="flex items-center bg-[#FAFAF9] rounded-lg px-3 py-3"
             >
               <Search size={18} className="text-gray-400" />
-
               <input
                 type="text"
                 value={searchQuery}
@@ -361,30 +312,20 @@ export default function Navbar() {
 
             <Link
               to="/wishlist"
-              onClick={() => setMenuOpen(false)}
+              onClick={closeMobileMenu}
               className="flex items-center gap-2"
             >
               <Heart size={18} />
-              Wishlist
-              {wishlistCount > 0 && (
-                <span className="text-red-500 font-bold">
-                  ({wishlistCount})
-                </span>
-              )}
+              Wishlist ({wishlistCount})
             </Link>
 
             <Link
               to="/cart"
-              onClick={() => setMenuOpen(false)}
+              onClick={closeMobileMenu}
               className="flex items-center gap-2"
             >
               <ShoppingBag size={18} />
-              Cart
-              {cartCount > 0 && (
-                <span className="text-[#047857] font-bold">
-                  ({cartCount})
-                </span>
-              )}
+              Cart ({cartCount})
             </Link>
 
             {!loading && (
@@ -402,12 +343,9 @@ export default function Navbar() {
                         {displayName.charAt(0).toUpperCase()}
                       </div>
                     )}
-
                     <div>
                       <p className="font-semibold">{displayName}</p>
-                      <p className="text-xs text-gray-500">
-                        {user.email}
-                      </p>
+                      <p className="text-xs text-gray-500">{user.email}</p>
                     </div>
                   </div>
 
@@ -449,7 +387,7 @@ export default function Navbar() {
                 </>
               ) : (
                 <Link
-                  onClick={() => setMenuOpen(false)}
+                  onClick={closeMobileMenu}
                   to="/login"
                   className="flex items-center gap-2"
                 >
@@ -458,10 +396,8 @@ export default function Navbar() {
                 </Link>
               )
             )}
-
           </nav>
         )}
-
       </div>
     </header>
   );

@@ -11,12 +11,13 @@ import {
   LoaderCircle,
   Save,
   Camera,
+  CalendarDays,
+  Hash,
+  Eye,
 } from "lucide-react";
 
 import api from "../../services/api";
 import { useAuth } from "../../context/AuthContext";
-
-
 
 export default function CustomerDashboard() {
   const { user, loading, logout, refreshProfile } = useAuth();
@@ -28,22 +29,19 @@ export default function CustomerDashboard() {
   const [reviews, setReviews] = useState([]);
   const [dataLoading, setDataLoading] = useState(true);
   const [error, setError] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
-const [errorMessage, setErrorMessage] = useState("");
 
- const [profileForm, setProfileForm] = useState({
-    
-  first_name: "",
-  last_name: "",
-  email: "",
-  profile_picture: null,
-});
+  const [profileForm, setProfileForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    profile_picture: null,
+  });
 
-const [imagePreview, setImagePreview] = useState("");
-
+  const [imagePreview, setImagePreview] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
-  const [profileMessage, setProfileMessage] = useState("");
-  const [profileError, setProfileError] = useState("");
+  const [successMessage, setSuccessMessage] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [cancellingId, setCancellingId] = useState(null);
 
   // Redirect if user is not logged in
   useEffect(() => {
@@ -53,8 +51,9 @@ const [imagePreview, setImagePreview] = useState("");
   }, [user, loading, navigate]);
 
   // Load profile information
-useEffect(() => {
-  if (user) {
+  useEffect(() => {
+    if (!user) return;
+
     setProfileForm({
       first_name: user.first_name || "",
       last_name: user.last_name || "",
@@ -63,10 +62,9 @@ useEffect(() => {
     });
 
     setImagePreview(user.profile_picture || "");
-  }
-}, [user]);
+  }, [user]);
 
-  // Load dashboard data
+  // Fetch dashboard data
   useEffect(() => {
     if (!user) return;
 
@@ -107,46 +105,82 @@ useEffect(() => {
     fetchDashboardData();
   }, [user]);
 
-  // Update customer profile
-
-
-const handleProfileUpdate = async (e) => {
-  e.preventDefault();
-
-  setSuccessMessage("");
-  setErrorMessage("");
+  const cancelOrder = async (orderId) => {
+  if (!window.confirm("Are you sure you want to cancel this order?")) {
+    return;
+  }
 
   try {
-    const formData = new FormData();
+    setCancellingId(orderId);
 
-    formData.append("first_name", profileForm.first_name);
-    formData.append("last_name", profileForm.last_name);
-    formData.append("email", profileForm.email);
+    await api.patch(`/orders/${orderId}/cancel/`);
 
-    if (profileForm.profile_picture instanceof File) {
-      formData.append("profile_picture", profileForm.profile_picture);
-    }
-
-    await api.patch("/profile/update/", formData);
-
-    await refreshProfile();
-
-    setSuccessMessage("Your profile has been updated successfully!");
-    
+    setOrders((prev) =>
+      prev.map((order) =>
+        order.id === orderId
+          ? { ...order, status: "cancelled" }
+          : order
+      )
+    );
   } catch (error) {
-    console.error(error.response?.data || error);
-    setErrorMessage("Unable to update your profile. Please try again.");
+    alert(
+      error.response?.data?.error ||
+      error.response?.data?.message ||
+      "Failed to cancel order."
+    );
+  } finally {
+    setCancellingId(null);
   }
 };
 
+  // Update profile
+  const handleProfileUpdate = async (e) => {
+    e.preventDefault();
 
+    setSuccessMessage("");
+    setErrorMessage("");
+    setProfileSaving(true);
 
+    try {
+      const formData = new FormData();
+
+      formData.append("first_name", profileForm.first_name);
+      formData.append("last_name", profileForm.last_name);
+      formData.append("email", profileForm.email);
+
+      if (profileForm.profile_picture instanceof File) {
+        formData.append("profile_picture", profileForm.profile_picture);
+      }
+
+      await api.patch("/profile/update/", formData);
+      await refreshProfile();
+
+      setSuccessMessage("Your profile has been updated successfully!");
+
+      setProfileForm((prev) => ({
+        ...prev,
+        profile_picture: null,
+      }));
+    } catch (err) {
+      console.error(err.response?.data || err);
+
+      setErrorMessage(
+        err.response?.data?.email?.[0] ||
+          err.response?.data?.detail ||
+          "Unable to update your profile. Please try again."
+      );
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+
+  // Logout
   const handleLogout = async () => {
     try {
       await logout();
       navigate("/login");
-    } catch (error) {
-      console.error("Logout error:", error);
+    } catch (err) {
+      console.error("Logout error:", err);
     }
   };
 
@@ -159,18 +193,111 @@ const handleProfileUpdate = async (e) => {
   ];
 
   const getProductName = (item) =>
-    item.product?.name || item.product_name || item.name || "Product";
+    item.product?.name ||
+    item.product_name ||
+    item.name ||
+    "Product";
 
   const getAmount = (order) =>
     order.amount ?? order.total ?? order.order_total ?? 0;
 
   const formatDate = (date) => {
     if (!date) return "Date unavailable";
-    return new Date(date).toLocaleDateString();
+    return new Date(date).toLocaleString();
   };
 
-  const displayName =
-    user?.first_name || user?.username || "Customer";
+  const formatStatus = (status) =>
+    (status || "pending").replaceAll("_", " ");
+
+  const statusColor = (status) => {
+    const colors = {
+      pending: "bg-amber-50 text-amber-700",
+      processing: "bg-blue-50 text-blue-700",
+      shipped: "bg-indigo-50 text-indigo-700",
+      delivered: "bg-emerald-50 text-emerald-700",
+      cancelled: "bg-red-50 text-red-700",
+      failed: "bg-red-50 text-red-700",
+    };
+
+    return colors[status] || "bg-gray-100 text-gray-700";
+  };
+
+  const displayName = user?.first_name || user?.username || "Customer";
+
+  // Compact order card
+  const OrderCard = ({ order }) => (
+    <div className="bg-white border border-gray-100 rounded-2xl p-5 md:p-6">
+      <div className="flex flex-wrap justify-between items-start gap-4">
+        <div>
+          <p className="font-bold text-lg">
+            Order #{order.id}
+          </p>
+
+          <p className="text-sm text-gray-500 mt-2 flex items-center gap-2">
+            <CalendarDays size={14} />
+            {formatDate(order.created_at)}
+          </p>
+
+          {order.tracking_id && (
+            <p className="text-sm text-gray-500 mt-2 flex items-center gap-2">
+              <Hash size={14} />
+              <span className="break-all">{order.tracking_id}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="text-right">
+          <span
+            className={`inline-flex px-3 py-1 rounded-full text-xs font-semibold capitalize ${statusColor(
+              order.status
+            )}`}
+          >
+            {formatStatus(order.status)}
+          </span>
+
+          <p className="font-bold text-lg mt-3">
+            {(order.currency || "USD").toUpperCase()} {getAmount(order)}
+          </p>
+
+          <p className="text-xs text-gray-500 mt-1 uppercase">
+            {order.payment_method === "stripe"
+              ? "Online Payment"
+              : order.payment_method === "cod"
+                ? "Cash on Delivery"
+                : order.payment_method || "Payment unavailable"}
+          </p>
+        </div>
+      </div>
+
+<div className="border-t border-gray-100 mt-5 pt-4 flex justify-between items-center gap-3">
+  <p className="text-sm text-gray-500">
+    {order.items?.length || 0} product(s)
+  </p>
+
+  <div className="flex items-center gap-2">
+    <Link
+      to={`/dashboard/orders/${order.id}`}
+      className="inline-flex items-center gap-2 bg-neutral-900 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition"
+    >
+      <Eye size={16} />
+      View Details
+    </Link>
+
+    {order.status === "pending" && (
+      <button
+        onClick={() => cancelOrder(order.id)}
+        disabled={cancellingId === order.id}
+        className="inline-flex items-center justify-center gap-2 border border-red-200 text-red-600 hover:bg-red-50 px-4 py-2.5 rounded-xl text-sm font-semibold transition disabled:opacity-50"
+      >
+        {cancellingId === order.id ? "Cancelling..." : "Cancel Order"}
+      </button>
+    )}
+  </div>
+</div>
+
+
+    </div>
+  );
 
   if (loading || !user) {
     return (
@@ -206,13 +333,12 @@ const handleProfileUpdate = async (e) => {
 
           {/* Sidebar */}
           <aside className="bg-white rounded-2xl border border-gray-100 p-5 h-fit">
-
             <div className="flex items-center gap-3 pb-5 border-b">
               {user.profile_picture ? (
                 <img
-                    src={user.profile_picture || "/default-avatar.png"}
-                    alt="Profile"
-                    className="w-20 h-20 rounded-full object-cover"
+                  src={user.profile_picture}
+                  alt="Profile"
+                  className="w-12 h-12 rounded-full object-cover"
                 />
               ) : (
                 <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold text-lg">
@@ -221,9 +347,7 @@ const handleProfileUpdate = async (e) => {
               )}
 
               <div className="min-w-0">
-                <p className="font-bold truncate">
-                  {displayName}
-                </p>
+                <p className="font-bold truncate">{displayName}</p>
                 <p className="text-xs text-gray-500 truncate">
                   {user.email}
                 </p>
@@ -239,8 +363,8 @@ const handleProfileUpdate = async (e) => {
                     key={item.id}
                     onClick={() => {
                       setActiveTab(item.id);
-                      setProfileMessage("");
-                      setProfileError("");
+                      setSuccessMessage("");
+                      setErrorMessage("");
                     }}
                     className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition ${
                       activeTab === item.id
@@ -266,7 +390,6 @@ const handleProfileUpdate = async (e) => {
 
           {/* Main Content */}
           <main className="min-w-0">
-
             {dataLoading ? (
               <div className="bg-white rounded-2xl p-12 flex justify-center">
                 <LoaderCircle
@@ -314,9 +437,11 @@ const handleProfileUpdate = async (e) => {
                               className="text-emerald-700 mb-4"
                               size={25}
                             />
+
                             <p className="text-gray-500 text-sm">
                               {item.label}
                             </p>
+
                             <h2 className="text-3xl font-bold mt-1">
                               {item.value}
                             </h2>
@@ -325,8 +450,8 @@ const handleProfileUpdate = async (e) => {
                       })}
                     </div>
 
-                    <div className="bg-white rounded-2xl border border-gray-100 p-6">
-                      <div className="flex justify-between items-center mb-5">
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center">
                         <h2 className="text-xl font-bold">
                           Recent Orders
                         </h2>
@@ -340,74 +465,66 @@ const handleProfileUpdate = async (e) => {
                       </div>
 
                       {orders.length === 0 ? (
-                        <p className="text-gray-500 py-8 text-center">
+                        <div className="bg-white rounded-2xl p-8 text-center text-gray-500">
                           No orders yet.
-                        </p>
-                      ) : (
-                        orders.slice(0, 5).map((order) => (
-                          <div
-                            key={order.id}
-                            className="py-4 border-t flex flex-wrap justify-between gap-3"
-                          >
-                            <div>
-                              <p className="font-semibold">
-                                Order #{order.id}
-                              </p>
-                              <p className="text-sm text-gray-500">
-                                {formatDate(order.created_at)}
-                              </p>
-                            </div>
 
-                            <div className="text-right">
-                              <p className="font-bold">
-                                {order.currency || "USD"}{" "}
-                                {getAmount(order)}
-                              </p>
-                              <span className="text-xs text-emerald-700 capitalize">
-                                {order.status || "Pending"}
-                              </span>
-                            </div>
+                          <div className="mt-4">
+                            <Link
+                              to="/shop"
+                              className="text-emerald-700 font-semibold"
+                            >
+                              Start Shopping
+                            </Link>
                           </div>
+                        </div>
+                      ) : (
+                        orders.slice(0, 3).map((order) => (
+                          <OrderCard
+                            key={order.id}
+                            order={order}
+                          />
                         ))
                       )}
                     </div>
                   </>
                 )}
 
-                {/* Orders */}
+                {/* My Orders */}
                 {activeTab === "orders" && (
-                  <div className="bg-white rounded-2xl border border-gray-100 p-6">
-                    <h2 className="text-xl font-bold mb-5">
-                      My Orders
-                    </h2>
+                  <div className="space-y-5">
+                    <div>
+                      <h2 className="text-2xl font-bold">
+                        My Orders
+                      </h2>
+                      <p className="text-sm text-gray-500 mt-1">
+                        View your order history and details.
+                      </p>
+                    </div>
 
                     {orders.length === 0 ? (
-                      <p className="text-gray-500 py-8 text-center">
-                        You haven't placed any orders yet.
-                      </p>
+                      <div className="bg-white rounded-2xl p-8 text-center border border-gray-100">
+                        <ShoppingBag
+                          className="mx-auto text-gray-400 mb-3"
+                          size={36}
+                        />
+
+                        <p className="text-gray-500">
+                          You haven't placed any orders yet.
+                        </p>
+
+                        <Link
+                          to="/shop"
+                          className="inline-block mt-4 bg-emerald-700 text-white px-5 py-2.5 rounded-xl"
+                        >
+                          Start Shopping
+                        </Link>
+                      </div>
                     ) : (
                       orders.map((order) => (
-                        <div
+                        <OrderCard
                           key={order.id}
-                          className="border-t py-5 flex flex-wrap justify-between gap-3"
-                        >
-                          <div>
-                            <p className="font-bold">
-                              Order #{order.id}
-                            </p>
-                            <p className="text-sm text-gray-500 mt-1">
-                              {formatDate(order.created_at)}
-                            </p>
-                            <p className="text-sm capitalize mt-1">
-                              Status: {order.status || "Pending"}
-                            </p>
-                          </div>
-
-                          <p className="font-bold">
-                            {order.currency || "USD"}{" "}
-                            {getAmount(order)}
-                          </p>
-                        </div>
+                          order={order}
+                        />
                       ))
                     )}
                   </div>
@@ -491,10 +608,7 @@ const handleProfileUpdate = async (e) => {
 
                           <p className="text-amber-500 mt-1">
                             {"★".repeat(
-                              Math.min(
-                                5,
-                                Number(review.rating || 0)
-                              )
+                              Math.min(5, Number(review.rating || 0))
                             )}
                           </p>
 
@@ -507,42 +621,27 @@ const handleProfileUpdate = async (e) => {
                   </div>
                 )}
 
-                {/* Editable Profile */}
+                {/* Profile */}
                 {activeTab === "profile" && (
                   <div className="bg-white rounded-2xl border border-gray-100 p-6 md:p-8">
                     <h2 className="text-2xl font-bold mb-2">
                       My Profile
                     </h2>
 
-                    {successMessage && (
-  <div className="mb-5 flex items-center gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
-    <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 font-bold">
-      ✓
-    </span>
-    <span>{successMessage}</span>
-  </div>
-)}
-
-{errorMessage && (
-  <div className="mb-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-    {errorMessage}
-  </div>
-)}
-
                     <p className="text-gray-500 text-sm mb-7">
                       Update your personal account information.
                     </p>
 
-                    {profileMessage && (
-                      <p className="bg-green-50 text-green-700 p-3 rounded-lg mb-5">
-                        {profileMessage}
-                      </p>
+                    {successMessage && (
+                      <div className="mb-5 rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-800">
+                        {successMessage}
+                      </div>
                     )}
 
-                    {profileError && (
-                      <p className="bg-red-50 text-red-600 p-3 rounded-lg mb-5">
-                        {profileError}
-                      </p>
+                    {errorMessage && (
+                      <div className="mb-5 rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+                        {errorMessage}
+                      </div>
                     )}
 
                     <form
@@ -556,22 +655,52 @@ const handleProfileUpdate = async (e) => {
                         </label>
 
                         <div className="flex items-center gap-4">
-                          {profileForm.profile_picture_url ? (
+                          {imagePreview ? (
                             <img
-                              src={profileForm.profile_picture_url}
-                              alt="Profile preview"
+                              src={imagePreview}
+                              alt="Profile Preview"
                               className="w-20 h-20 rounded-full object-cover border"
                             />
                           ) : (
-                            <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700">
-                              <UserRound size={32} />
+                            <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center">
+                              <UserRound
+                                size={32}
+                                className="text-emerald-700"
+                              />
                             </div>
                           )}
 
-                          <div className="flex-1">
-                            <Camera size={20} className="text-emerald-700 mb-2" />
-                            <p className="text-xs text-gray-500">
-                              Paste an image URL below to update your picture.
+                          <div>
+                            <label className="cursor-pointer inline-block bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm">
+                              <Camera
+                                size={16}
+                                className="inline mr-2"
+                              />
+                              Upload Photo
+
+                              <input
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+
+                                  if (file) {
+                                    setProfileForm((prev) => ({
+                                      ...prev,
+                                      profile_picture: file,
+                                    }));
+
+                                    setImagePreview(
+                                      URL.createObjectURL(file)
+                                    );
+                                  }
+                                }}
+                              />
+                            </label>
+
+                            <p className="text-xs text-gray-500 mt-2">
+                              Select a photo from your device.
                             </p>
                           </div>
                         </div>
@@ -587,10 +716,10 @@ const handleProfileUpdate = async (e) => {
                           type="text"
                           value={profileForm.first_name}
                           onChange={(e) =>
-                            setProfileForm({
-                              ...profileForm,
+                            setProfileForm((prev) => ({
+                              ...prev,
                               first_name: e.target.value,
-                            })
+                            }))
                           }
                           className="w-full border border-gray-200 rounded-xl p-3 outline-none focus:border-emerald-700"
                           placeholder="Enter first name"
@@ -607,10 +736,10 @@ const handleProfileUpdate = async (e) => {
                           type="text"
                           value={profileForm.last_name}
                           onChange={(e) =>
-                            setProfileForm({
-                              ...profileForm,
+                            setProfileForm((prev) => ({
+                              ...prev,
                               last_name: e.target.value,
-                            })
+                            }))
                           }
                           className="w-full border border-gray-200 rounded-xl p-3 outline-none focus:border-emerald-700"
                           placeholder="Enter last name"
@@ -628,61 +757,14 @@ const handleProfileUpdate = async (e) => {
                           required
                           value={profileForm.email}
                           onChange={(e) =>
-                            setProfileForm({
-                              ...profileForm,
+                            setProfileForm((prev) => ({
+                              ...prev,
                               email: e.target.value,
-                            })
+                            }))
                           }
                           className="w-full border border-gray-200 rounded-xl p-3 outline-none focus:border-emerald-700"
                         />
                       </div>
-
-                      {/* Profile Picture URL */}
-                        <div>
-  <label className="block text-sm font-medium mb-3">
-    Profile Picture
-  </label>
-
-  <div className="flex items-center gap-4">
-    {imagePreview ? (
-      <img
-        src={imagePreview}
-        alt="Profile Preview"
-        className="w-20 h-20 rounded-full object-cover border"
-      />
-    ) : (
-      <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center">
-        <UserRound size={32} className="text-emerald-700" />
-      </div>
-    )}
-
-    <div>
-      <label className="cursor-pointer inline-block bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm">
-        <Camera size={16} className="inline mr-2" />
-        Upload Photo
-
-        <input
-  type="file"
-  accept="image/*"
-  onChange={(e) => {
-    const file = e.target.files?.[0]
-
-    if (file) {
-      setProfileForm((prev) => ({
-        ...prev,
-        profile_picture: file,
-      }))
-    }
-  }}
-/>
-      </label>
-
-      <p className="text-xs text-gray-500 mt-2">
-        Select a photo from your device.
-      </p>
-    </div>
-  </div>
-</div>
 
                       <button
                         type="submit"
@@ -690,7 +772,10 @@ const handleProfileUpdate = async (e) => {
                         className="flex items-center justify-center gap-2 bg-[#047857] text-white px-8 py-3 rounded-full font-semibold hover:bg-emerald-800 disabled:opacity-60"
                       >
                         {profileSaving ? (
-                          <LoaderCircle size={18} className="animate-spin" />
+                          <LoaderCircle
+                            size={18}
+                            className="animate-spin"
+                          />
                         ) : (
                           <Save size={18} />
                         )}

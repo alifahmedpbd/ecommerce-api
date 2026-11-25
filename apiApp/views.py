@@ -263,7 +263,7 @@ def create_checkout_session(request):
         with transaction.atomic():
             order = Order.objects.create(
                 amount=total_amount,
-                currency="usd",
+                currency="bdt",
                 customer_name=name,
                 customer_email=email,
                 customer_phone=phone,
@@ -297,7 +297,7 @@ def create_checkout_session(request):
             line_items=[
                 {
                     "price_data": {
-                        "currency": "usd",
+                        "currency": "bdt",
                         "product_data": {
                             "name": item.product.name,
                         },
@@ -897,16 +897,33 @@ class LogoutView(APIView):
         }, status=status.HTTP_200_OK)
 
 
+
 class OrderHistoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         orders = Order.objects.filter(
-            customer_email=request.user.email
-        ).order_by('-created_at')
+            customer_email__iexact=request.user.email
+        ).prefetch_related(
+            "items__product"
+        ).order_by("-created_at")
 
         serializer = OrderSerializer(orders, many=True)
+        return Response(serializer.data)
+    
 
+
+class CustomerOrderDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        order = get_object_or_404(
+            Order.objects.prefetch_related("items__product"),
+            pk=pk,
+            customer_email__iexact=request.user.email
+        )
+
+        serializer = OrderSerializer(order)
         return Response(serializer.data)
 
 

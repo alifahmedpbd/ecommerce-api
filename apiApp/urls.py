@@ -29,6 +29,7 @@ urlpatterns = [
     path('profile/', views.UserProfileView.as_view(), name='profile'),
     path('logout/', views.LogoutView.as_view(), name='logout'),
     path('orders/', views.OrderHistoryView.as_view(), name='order_history'),
+    path('orders/<int:pk>/', views.CustomerOrderDetailView.as_view(), name='customer_order_detail'),
 
     path('wishlist/', views.WishlistListView.as_view(), name='wishlist_list'),
     path('profile/update/', views.UserProfileUpdateView.as_view(), name='profile_update'),

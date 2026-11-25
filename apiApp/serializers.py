@@ -168,13 +168,13 @@ class RegisterSerializer(serializers.ModelSerializer):
         return user
     
 
+
 class OrderItemSerializer(serializers.ModelSerializer):
     product = ProductListSerializer(read_only=True)
 
     class Meta:
         model = OrderItem
         fields = ['id', 'product', 'quantity']
-
 
 
 class OrderSerializer(serializers.ModelSerializer):
@@ -184,15 +184,19 @@ class OrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = [
             'id',
+            'tracking_id',
             'stripe_checkout_id',
+            'customer_name',
             'customer_email',
+            'customer_phone',
+            'shipping_address',
+            'payment_method',
             'amount',
             'currency',
             'status',
             'created_at',
-            'items'
+            'items',
         ]
-
 
 class AdminProductSerializer(serializers.ModelSerializer):
     class Meta:

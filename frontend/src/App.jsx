@@ -31,6 +31,8 @@ import AdminReviews from "./pages/admin/AdminReviews";
 import Wishlist from "./pages/customer/Wishlist";
 
 import ForgotPassword from './pages/auth/ForgotPassword'
+import TrackOrder from "./pages/customer/TrackOrder";
+import CustomerOrderDetails from "./pages/customer/CustomerOrderDetails";
 
 function App() {
   return (
@@ -53,6 +55,16 @@ function App() {
           <Route path="/wishlist" element={<Wishlist />} />
 
           <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/track-order" element={<TrackOrder />} />
+
+          <Route
+  path="/dashboard/orders/:id"
+  element={
+    <RoleRoute role="customer">
+      <CustomerOrderDetails />
+    </RoleRoute>
+  }
+/>
 
           <Route
             path="/admin/*"
