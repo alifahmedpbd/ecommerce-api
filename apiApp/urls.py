@@ -74,5 +74,7 @@ urlpatterns = [
     path('reset-password/', views.ResetPasswordView.as_view(), name='reset_password'),
 
     path('track-order/<str:tracking_id>/', views.track_order, name='track_order'),
-    
+    path("coupons/validate/", views.validate_coupon, name="validate_coupon"),
+    path("delivery-charges/", views.get_delivery_charges, name="get_delivery_charges"),
+
 ]

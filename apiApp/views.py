@@ -5,7 +5,7 @@ from django.shortcuts import render
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from .models import Cart, CartItem, Category, Order, OrderItem, Product, Review, Wishlist
+from .models import Cart, CartItem, Category, Order, OrderItem, Product, Review, Wishlist, DeliveryCharge, Coupon
 from .serializers import (
     AdminCategorySerializer,
     AdminProductSerializer,
@@ -223,6 +223,7 @@ def product_search(request):
 
 
 
+
 @api_view(['POST'])
 def create_checkout_session(request):
     cart_code = request.data.get("cart_code")
@@ -232,7 +233,11 @@ def create_checkout_session(request):
     address = request.data.get("address")
     payment_method = request.data.get("payment_method")
 
-    if not all([cart_code, email, name, phone, address, payment_method]):
+    delivery_area = request.data.get("delivery_area")
+    coupon_code = request.data.get("coupon_code", "").strip().upper()
+
+    # Validate required fields
+    if not all([cart_code, email, name, phone, address, payment_method, delivery_area]):
         return Response(
             {"error": "Please provide all checkout details."},
             status=400
@@ -241,28 +246,100 @@ def create_checkout_session(request):
     if payment_method not in ["cod", "stripe"]:
         return Response({"error": "Invalid payment method."}, status=400)
 
+    if delivery_area not in ["dhaka", "outside"]:
+        return Response({"error": "Invalid delivery area."}, status=400)
+
     if len(address) > 500:
         return Response(
             {"error": "Address must be 500 characters or less."},
             status=400
         )
 
+    # Get cart
     cart = get_object_or_404(Cart, cart_code=cart_code)
     cartitems = cart.cartitems.select_related("product").all()
 
     if not cartitems.exists():
         return Response({"error": "Your cart is empty."}, status=400)
 
-    total_amount = sum(
+    # Calculate subtotal
+    subtotal = sum(
         (item.product.price * item.quantity for item in cartitems),
         Decimal("0.00")
     )
 
+    # Get delivery charge
+    delivery = DeliveryCharge.objects.filter(area=delivery_area).first()
+
+    if not delivery:
+        return Response(
+            {"error": "Delivery charge is not configured."},
+            status=400
+        )
+
+    delivery_charge = delivery.charge
+
+    # Coupon validation
+    coupon = None
+    discount_amount = Decimal("0.00")
+
+    if coupon_code:
+        coupon = Coupon.objects.filter(code__iexact=coupon_code).first()
+
+        if not coupon:
+            return Response({"error": "Invalid coupon code."}, status=400)
+
+        now = timezone.now()
+
+        if not coupon.is_active:
+            return Response({"error": "This coupon is inactive."}, status=400)
+
+        if coupon.valid_from > now:
+            return Response({"error": "This coupon is not active yet."}, status=400)
+
+        if coupon.valid_until and coupon.valid_until < now:
+            return Response({"error": "This coupon has expired."}, status=400)
+
+        if coupon.usage_limit is not None and coupon.used_count >= coupon.usage_limit:
+            return Response({"error": "Coupon usage limit reached."}, status=400)
+
+        if subtotal < coupon.minimum_order_amount:
+            return Response(
+                {
+                    "error": f"Minimum order amount is ৳{coupon.minimum_order_amount}."
+                },
+                status=400
+            )
+
+        if coupon.discount_type == "percentage":
+            discount_amount = (
+                subtotal * coupon.discount_value / Decimal("100")
+            ).quantize(Decimal("0.01"))
+
+        elif coupon.discount_type == "fixed":
+            discount_amount = coupon.discount_value
+
+        # Apply maximum discount limit
+        if coupon.max_discount is not None:
+            discount_amount = min(discount_amount, coupon.max_discount)
+
+        # Discount cannot exceed subtotal
+        discount_amount = min(discount_amount, subtotal)
+
+    # Final amount
+    total_amount = subtotal - discount_amount + delivery_charge
+
     # Cash on Delivery
     if payment_method == "cod":
         with transaction.atomic():
+
             order = Order.objects.create(
                 amount=total_amount,
+                subtotal=subtotal,
+                discount_amount=discount_amount,
+                delivery_charge=delivery_charge,
+                delivery_area=delivery_area,
+                coupon=coupon,
                 currency="bdt",
                 customer_name=name,
                 customer_email=email,
@@ -279,6 +356,10 @@ def create_checkout_session(request):
                     quantity=item.quantity
                 )
 
+            if coupon:
+                coupon.used_count += 1
+                coupon.save(update_fields=["used_count"])
+
             cart.cartitems.all().delete()
 
         send_order_email(order, "created")
@@ -287,34 +368,78 @@ def create_checkout_session(request):
             "message": "COD order placed successfully.",
             "order_id": order.id,
             "tracking_id": order.tracking_id,
+            "subtotal": str(subtotal),
+            "discount_amount": str(discount_amount),
+            "delivery_charge": str(delivery_charge),
+            "total_amount": str(total_amount),
+            "delivery_area": delivery_area,
+            "coupon": coupon.code if coupon else None,
             "status": order.status,
             "payment_method": order.payment_method
         }, status=201)
 
     # Stripe Online Payment
     try:
-        checkout_session = stripe.checkout.Session.create(
-            line_items=[
-                {
-                    "price_data": {
-                        "currency": "bdt",
-                        "product_data": {
-                            "name": item.product.name,
-                        },
-                        "unit_amount": int(item.product.price * 100),
+        line_items = [
+            {
+                "price_data": {
+                    "currency": "bdt",
+                    "product_data": {
+                        "name": item.product.name,
                     },
-                    "quantity": item.quantity,
+                    "unit_amount": int(item.product.price * 100),
+                },
+                "quantity": item.quantity,
+            }
+            for item in cartitems
+        ]
+
+        # Add delivery charge to Stripe Checkout
+        shipping_options = [
+            {
+                "shipping_rate_data": {
+                    "type": "fixed_amount",
+                    "fixed_amount": {
+                        "amount": int(delivery_charge * 100),
+                        "currency": "bdt",
+                    },
+                    "display_name": "Delivery Charge",
                 }
-                for item in cartitems
-            ],
+            }
+        ]
+
+        discounts = []
+
+        # Create Stripe coupon for the calculated discount
+        if coupon and discount_amount > 0:
+            stripe_coupon = stripe.Coupon.create(
+                amount_off=int(discount_amount * 100),
+                currency="bdt",
+                duration="once",
+                name=f"Coupon {coupon.code}"
+            )
+
+            discounts = [
+                {"coupon": stripe_coupon.id}
+            ]
+
+        checkout_session = stripe.checkout.Session.create(
+            line_items=line_items,
             mode="payment",
             customer_email=email,
+            shipping_options=shipping_options,
+            discounts=discounts if discounts else None,
             metadata={
                 "cart_code": cart_code,
                 "customer_name": name,
                 "customer_email": email,
                 "customer_phone": phone,
                 "shipping_address": address,
+                "subtotal": str(subtotal),
+                "discount_amount": str(discount_amount),
+                "delivery_charge": str(delivery_charge),
+                "delivery_area": delivery_area,
+                "coupon_id": str(coupon.id) if coupon else "",
             },
             success_url=(
                 "http://localhost:5173/success"
@@ -326,7 +451,11 @@ def create_checkout_session(request):
         return Response({
             "message": "Stripe checkout session created.",
             "checkout_url": checkout_session.url,
-            "session_id": checkout_session.id
+            "session_id": checkout_session.id,
+            "subtotal": str(subtotal),
+            "discount_amount": str(discount_amount),
+            "delivery_charge": str(delivery_charge),
+            "total_amount": str(total_amount),
         })
 
     except Exception as e:
@@ -334,8 +463,6 @@ def create_checkout_session(request):
             {"error": str(e)},
             status=400
         )
-
-
 
 def send_order_email(order, event):
     subjects = {
@@ -375,7 +502,6 @@ def send_order_email(order, event):
         )
 
 
-
 @csrf_exempt
 def stripe_webhook(request):
     payload = request.body
@@ -406,38 +532,94 @@ def stripe_webhook(request):
 
 def fulfil_checkout(session, cart_code):
     metadata = session.get("metadata", {})
+    checkout_id = session["id"]
+
+    # Prevent duplicate order creation
+    existing_order = Order.objects.filter(
+        stripe_checkout_id=checkout_id
+    ).first()
+
+    if existing_order:
+        return existing_order
 
     cart = Cart.objects.filter(cart_code=cart_code).first()
+
     if not cart:
-        return
+        return None
 
     with transaction.atomic():
-        order, created = Order.objects.get_or_create(
-            stripe_checkout_id=session["id"],
-            defaults={
-                "amount": Decimal(str(session["amount_total"])) / 100,
-                "currency": session["currency"],
-                "customer_name": metadata.get("customer_name", ""),
-                "customer_email": metadata.get("customer_email", ""),
-                "customer_phone": metadata.get("customer_phone", ""),
-                "shipping_address": metadata.get("shipping_address", ""),
-                "payment_method": "stripe",
-                "status": "processing",
-            }
+
+        # Check again inside transaction
+        order = Order.objects.filter(
+            stripe_checkout_id=checkout_id
+        ).first()
+
+        if order:
+            return order
+
+        coupon = None
+        coupon_id = metadata.get("coupon_id")
+
+        if coupon_id:
+            coupon = Coupon.objects.select_for_update().filter(
+                id=coupon_id
+            ).first()
+
+        # Create Order
+        order = Order.objects.create(
+            stripe_checkout_id=checkout_id,
+
+            amount=(
+                Decimal(str(session["amount_total"])) / Decimal("100")
+            ),
+
+            subtotal=Decimal(
+                metadata.get("subtotal", "0.00")
+            ),
+
+            discount_amount=Decimal(
+                metadata.get("discount_amount", "0.00")
+            ),
+
+            delivery_charge=Decimal(
+                metadata.get("delivery_charge", "0.00")
+            ),
+
+            delivery_area=metadata.get("delivery_area", "dhaka"),
+
+            coupon=coupon,
+
+            currency=session.get("currency", "bdt").lower(),
+
+            customer_name=metadata.get("customer_name", ""),
+            customer_email=metadata.get("customer_email", ""),
+            customer_phone=metadata.get("customer_phone", ""),
+            shipping_address=metadata.get("shipping_address", ""),
+
+            payment_method="stripe",
+            status="processing",
         )
 
-        if created:
-            for item in cart.cartitems.select_related("product").all():
-                OrderItem.objects.create(
-                    order=order,
-                    product=item.product,
-                    quantity=item.quantity
-                )
+        # Create Order Items
+        for item in cart.cartitems.select_related("product").all():
+            OrderItem.objects.create(
+                order=order,
+                product=item.product,
+                quantity=item.quantity
+            )
 
-            cart.cartitems.all().delete()
+        # Increase coupon usage only after successful payment
+        if coupon:
+            coupon.used_count += 1
+            coupon.save(update_fields=["used_count"])
 
-    if created:
-        send_order_email(order, "created")
+        # Clear cart
+        cart.cartitems.all().delete()
+
+    send_order_email(order, "created")
+
+    return order
+
 
 class RegisterView(APIView):
 
@@ -1623,3 +1805,87 @@ def track_order(request, tracking_id):
         "status": order.status,
         "created_at": order.created_at,
     })
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def validate_coupon(request):
+    code = request.data.get("code", "").strip().upper()
+    subtotal = request.data.get("subtotal")
+
+    if not code or subtotal is None:
+        return Response(
+            {"error": "Coupon code and subtotal are required."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        subtotal = Decimal(str(subtotal))
+        if not subtotal.is_finite() or subtotal < 0:
+            raise InvalidOperation
+    except (InvalidOperation, ValueError, TypeError):
+        return Response(
+            {"error": "Invalid subtotal."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    coupon = Coupon.objects.filter(code=code).first()
+
+    if not coupon:
+        return Response({"error": "Invalid coupon code."}, status=400)
+
+    now = timezone.now()
+
+    if not coupon.is_active:
+        return Response({"error": "This coupon is inactive."}, status=400)
+
+    if now < coupon.valid_from:
+        return Response({"error": "This coupon is not active yet."}, status=400)
+
+    if coupon.valid_until and now > coupon.valid_until:
+        return Response({"error": "This coupon has expired."}, status=400)
+
+    if coupon.usage_limit is not None and coupon.used_count >= coupon.usage_limit:
+        return Response({"error": "Coupon usage limit reached."}, status=400)
+
+    if subtotal < coupon.minimum_order_amount:
+        return Response({
+            "error": f"Minimum order amount is ৳{coupon.minimum_order_amount}."
+        }, status=400)
+
+    if coupon.discount_type == "percentage":
+        discount = subtotal * coupon.discount_value / Decimal("100")
+    else:
+        discount = coupon.discount_value
+
+    if coupon.max_discount is not None:
+        discount = min(discount, coupon.max_discount)
+
+    discount = min(discount, subtotal).quantize(Decimal("0.01"))
+
+    return Response({
+        "message": "Coupon applied successfully.",
+        "coupon_code": coupon.code,
+        "discount_type": coupon.discount_type,
+        "discount_value": str(coupon.discount_value),
+        "discount_amount": str(discount),
+        "subtotal": str(subtotal),
+        "total_after_discount": str(subtotal - discount),
+    })
+
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def get_delivery_charges(request):
+    charges = DeliveryCharge.objects.all().order_by("area")
+
+    data = [
+        {
+            "area": charge.area,
+            "area_name": charge.get_area_display(),
+            "charge": str(charge.charge),
+        }
+        for charge in charges
+    ]
+
+    return Response(data)

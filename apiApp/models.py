@@ -147,6 +147,76 @@ class Wishlist(models.Model):
     def __str__(self):
         return f"{self.user.username} - {self.product.name}"
 
+
+class Coupon(models.Model):
+    DISCOUNT_TYPES = [
+        ("percentage", "Percentage"),
+        ("fixed", "Fixed Amount"),
+    ]
+
+    code = models.CharField(max_length=50, unique=True)
+    discount_type = models.CharField(
+        max_length=20,
+        choices=DISCOUNT_TYPES
+    )
+    discount_value = models.DecimalField(
+        max_digits=10,
+        decimal_places=2
+    )
+
+    minimum_order_amount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0
+    )
+
+    max_discount = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True
+    )
+
+    usage_limit = models.PositiveIntegerField(
+        null=True,
+        blank=True
+    )
+
+    used_count = models.PositiveIntegerField(default=0)
+
+    valid_from = models.DateTimeField(default=timezone.now)
+    valid_until = models.DateTimeField(null=True, blank=True)
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.code
+
+    def save(self, *args, **kwargs):
+        self.code = self.code.upper().strip()
+        super().save(*args, **kwargs)
+
+
+class DeliveryCharge(models.Model):
+    AREA_CHOICES = [
+        ("dhaka", "Inside Dhaka"),
+        ("outside", "Outside Dhaka"),
+    ]
+
+    area = models.CharField(
+        max_length=20,
+        choices=AREA_CHOICES,
+        unique=True
+    )
+
+    charge = models.DecimalField(
+        max_digits=10,
+        decimal_places=2
+    )
+
+    def __str__(self):
+        return f"{self.get_area_display()} - ৳{self.charge}"
     
 class Order(models.Model):
     PAYMENT_METHOD_CHOICES = [
@@ -162,6 +232,13 @@ class Order(models.Model):
         ("cancelled", "Cancelled"),
         ("failed", "Failed"),
     ]
+    COURIER_CHOICES = [
+        ("pathao", "Pathao"),
+        ("steadfast", "Steadfast"),
+        ("redx", "RedX"),
+        ("sundarban", "Sundarban"),
+        ("ecourier", "eCourier"),
+    ]
 
     stripe_checkout_id = models.CharField(
         max_length=255,
@@ -170,32 +247,25 @@ class Order(models.Model):
         blank=True
     )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    discount_amount = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    delivery_charge = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    delivery_area = models.CharField(max_length=20, choices=[
+        ("dhaka", "Inside Dhaka"),
+        ("outside", "Outside Dhaka"),
+        ], default="dhaka")
+    coupon = models.ForeignKey(Coupon, on_delete=models.SET_NULL, null=True, blank=True, related_name="orders")
     currency = models.CharField(max_length=10, default="bdt")
-
     customer_name = models.CharField(max_length=255, default="")
     customer_email = models.EmailField(default="")
     customer_phone = models.CharField(max_length=30, default="")
     shipping_address = models.TextField(default="")
-
-    payment_method = models.CharField(
-        max_length=20,
-        choices=PAYMENT_METHOD_CHOICES, default="cod"
-    )
-
-    status = models.CharField(
-        max_length=50,
-        choices=STATUS_CHOICES,
-        default="pending"
-    )
-
+    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES, default="cod")
+    courier = models.CharField(max_length=20, choices=COURIER_CHOICES, null=True, blank=True)
+    courier_tracking_number = models.CharField(max_length=100, blank=True, default="")
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="pending")
     created_at = models.DateTimeField(auto_now_add=True)
-    tracking_id = models.CharField(
-        max_length=30,
-        unique=True,
-        null=True,
-        blank=True,
-        editable=False
-    )
+    tracking_id = models.CharField(max_length=30, unique=True, null=True, blank=True, editable=False)
 
     def __str__(self):
         return f"Order {self.id} - {self.status}"

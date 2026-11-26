@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
-from .models import CustomUser, Order, OrderItem, Product, Category, Cart, CartItem, Review, ProductRating, Wishlist
+from .models import CustomUser, Coupon, DeliveryCharge, Order, OrderItem, Product, Category, Cart, CartItem, Review, ProductRating, Wishlist
 # Register your models here.
 
 # Custom User Admin
@@ -50,3 +50,5 @@ class OrderAdmin(admin.ModelAdmin):
 
 
 admin.site.register(Order, OrderAdmin)
+admin.site.register(Coupon)
+admin.site.register(DeliveryCharge)
